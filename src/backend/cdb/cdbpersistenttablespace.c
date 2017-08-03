@@ -57,31 +57,27 @@ typedef struct PersistentTablespaceData
 	PersistentFileSysObjData		fileSysObjData;
 
 } PersistentTablespaceData;
+		
+#define WRITE_TABLESPACE_HASH_LOCK \
+	{ \
+		Assert(LWLockHeldByMe(PersistentObjLock)); \
+		LWLockAcquire(TablespaceHashLock, LW_EXCLUSIVE); \
+	}
 
-typedef struct TablespaceDirEntryKey
-{
-	Oid	tablespaceOid;
-} TablespaceDirEntryKey;
-
-typedef struct TablespaceDirEntryData
-{
-	TablespaceDirEntryKey	key;
-
-	Oid						filespaceOid;
-
-	PersistentFileSysState	state;
-	int64					persistentSerialNum;
-	ItemPointerData 		persistentTid;
-	
-} TablespaceDirEntryData;
-typedef TablespaceDirEntryData *TablespaceDirEntry;
-
+#define WRITE_TABLESPACE_HASH_UNLOCK \
+	LWLockRelease(TablespaceHashLock);
 
 /*
  * Global Variables
  */
 PersistentTablespaceSharedData	*persistentTablespaceSharedData = NULL;
-static HTAB *persistentTablespaceSharedHashTable = NULL;
+/*
+ * Reads to the persistentTablespaceSharedHashTable are protected by
+ * TablespaceHashLock alone. To write to persistentTablespaceSharedHashTable,
+ * you must first acquire the PersistentObjLock, and then the
+ * TablespaceHashLock, both in exclusive mode.
+ */
+HTAB *persistentTablespaceSharedHashTable = NULL;
 
 PersistentTablespaceData	persistentTablespaceData = PersistentTablespaceData_StaticInit;
 
@@ -155,7 +151,7 @@ PersistentTablespace_CreateEntryUnderLock(
 	tablespaceDirEntry->state = 0;
 	tablespaceDirEntry->persistentSerialNum = 0;
 	MemSet(&tablespaceDirEntry->persistentTid, 0, sizeof(ItemPointerData));
-	
+
 	return tablespaceDirEntry;
 }
 
@@ -183,8 +179,6 @@ PersistentFileSysState
 PersistentTablespace_GetState(
 	Oid		tablespaceOid)
 {
-	READ_PERSISTENT_STATE_ORDERED_LOCK_DECLARE;
-
 	TablespaceDirEntry tablespaceDirEntry;
 
 	PersistentFileSysState	state;
@@ -204,18 +198,15 @@ PersistentTablespace_GetState(
 	// NOTE: Since we are not accessing data in the Buffer Pool, we don't need to
 	// acquire the MirroredLock.
 
-	READ_PERSISTENT_STATE_ORDERED_LOCK;
+	LWLockAcquire(TablespaceHashLock, LW_SHARED);
+	tablespaceDirEntry = PersistentTablespace_FindEntryUnderLock(tablespaceOid);
 
-	tablespaceDirEntry = 
-				PersistentTablespace_FindEntryUnderLock(
-												tablespaceOid);
 	if (tablespaceDirEntry == NULL)
 		elog(ERROR, "Did not find persistent tablespace entry %u", 
 			 tablespaceOid);
 
 	state = tablespaceDirEntry->state;
-
-	READ_PERSISTENT_STATE_ORDERED_UNLOCK;
+	LWLockRelease(TablespaceHashLock);
 
 	return state;
 }
@@ -255,12 +246,14 @@ static bool PersistentTablespace_ScanTupleCallback(
 									&parentXid,
 									&serialNum);
 
-	tablespaceDirEntry = 
+	WRITE_TABLESPACE_HASH_LOCK;
+	tablespaceDirEntry =
 		PersistentTablespace_CreateEntryUnderLock(filespaceOid, tablespaceOid);
-	
+
 	tablespaceDirEntry->state = state;
 	tablespaceDirEntry->persistentSerialNum = serialNum;
 	tablespaceDirEntry->persistentTid = *persistentTid;
+	WRITE_TABLESPACE_HASH_UNLOCK;
 
 	if (Debug_persistent_print)
 		elog(Persistent_DebugPrintLevel(), 
@@ -284,6 +277,8 @@ void PersistentTablespace_Reset(void)
 
 	hash_seq_init(&stat, persistentTablespaceSharedHashTable);
 
+	WRITE_TABLESPACE_HASH_LOCK;
+
 	while (true)
 	{
 		TablespaceDirEntry removeTablespaceDirEntry;
@@ -305,6 +300,7 @@ void PersistentTablespace_Reset(void)
 				 tablespaceDirEntry->persistentSerialNum,
 				 ItemPointerToString(&tablespaceDirEntry->persistentTid));
 
+		
 		removeTablespaceDirEntry = 
 					(TablespaceDirEntry) 
 							hash_search(persistentTablespaceSharedHashTable,
@@ -315,6 +311,8 @@ void PersistentTablespace_Reset(void)
 		if (removeTablespaceDirEntry == NULL)
 			elog(ERROR, "Trying to delete entry that does not exist");
 	}
+
+	WRITE_TABLESPACE_HASH_UNLOCK;
 }
 
 extern void PersistentTablespace_LookupTidAndSerialNum(
@@ -326,25 +324,19 @@ extern void PersistentTablespace_LookupTidAndSerialNum(
 
 	int64			*persistentSerialNum)
 {
-	READ_PERSISTENT_STATE_ORDERED_LOCK_DECLARE;
-
 	TablespaceDirEntry tablespaceDirEntry;
 
 	PersistentTablespace_VerifyInitScan();
 
-	READ_PERSISTENT_STATE_ORDERED_LOCK;
-
-	tablespaceDirEntry = 
-				PersistentTablespace_FindEntryUnderLock(
-												tablespaceOid);
+	LWLockAcquire(TablespaceHashLock, LW_SHARED);
+	tablespaceDirEntry = PersistentTablespace_FindEntryUnderLock(tablespaceOid);
 	if (tablespaceDirEntry == NULL)
 		elog(ERROR, "Did not find persistent tablespace entry %u", 
 			 tablespaceOid);
 
 	*persistentTid = tablespaceDirEntry->persistentTid;
 	*persistentSerialNum = tablespaceDirEntry->persistentSerialNum;
-
-	READ_PERSISTENT_STATE_ORDERED_UNLOCK;
+	LWLockRelease(TablespaceHashLock);
 }
 
 // -----------------------------------------------------------------------------
@@ -352,7 +344,11 @@ extern void PersistentTablespace_LookupTidAndSerialNum(
 // -----------------------------------------------------------------------------
 
 static void PersistentTablespace_AddTuple(
-	TablespaceDirEntry tablespaceDirEntry,
+	Oid filespaceOid,
+
+	Oid tablespaceOid,
+
+	PersistentFileSysState state,
 
 	int64			createMirrorDataLossTrackingSessionNum,
 
@@ -362,19 +358,21 @@ static void PersistentTablespace_AddTuple(
 
 	TransactionId 	parentXid,
 
-	bool			flushToXLog)
+	bool			flushToXLog,
+
+	ItemPointer     persistentTid,
+
+	int64          *persistentSerialNum)
+
 				/* When true, the XLOG record for this change will be flushed to disk. */
 {
-	Oid filespaceOid = tablespaceDirEntry->filespaceOid;
-	Oid tablespaceOid = tablespaceDirEntry->key.tablespaceOid;
-
 	Datum values[Natts_gp_persistent_tablespace_node];
 
 	GpPersistentTablespaceNode_SetDatumValues(
 								values,
 								filespaceOid,
 								tablespaceOid,
-								tablespaceDirEntry->state,
+								state,
 								createMirrorDataLossTrackingSessionNum,
 								mirrorExistenceState,
 								reserved,
@@ -385,8 +383,8 @@ static void PersistentTablespace_AddTuple(
 							PersistentFsObjType_TablespaceDir,
 							values,
 							flushToXLog,
-							&tablespaceDirEntry->persistentTid,
-							&tablespaceDirEntry->persistentSerialNum);
+							persistentTid,
+							persistentSerialNum);
 }
 
 PersistentTablespaceGetFilespaces PersistentTablespace_TryGetPrimaryAndMirrorFilespaces(
@@ -402,12 +400,6 @@ PersistentTablespaceGetFilespaces PersistentTablespace_TryGetPrimaryAndMirrorFil
 				 
 	Oid *filespaceOid)
 {
-	READ_PERSISTENT_STATE_ORDERED_LOCK_DECLARE;
-
-	TablespaceDirEntry tablespaceDirEntry;
-
-	PersistentTablespaceGetFilespaces result;
-
 	*primaryFilespaceLocation = NULL;
 	*mirrorFilespaceLocation = NULL;
 	*filespaceOid = InvalidOid;
@@ -474,35 +466,9 @@ PersistentTablespaceGetFilespaces PersistentTablespace_TryGetPrimaryAndMirrorFil
 	 */
 	PersistentTablespace_VerifyInitScan();
 
-	READ_PERSISTENT_STATE_ORDERED_LOCK;
-
-	tablespaceDirEntry =
-		PersistentTablespace_FindEntryUnderLock(
-										tablespaceOid);
-	if (tablespaceDirEntry == NULL)
-	{
-		result = PersistentTablespaceGetFilespaces_TablespaceNotFound;
-	}
-	else
-	{
-		*filespaceOid = tablespaceDirEntry->filespaceOid;
-
-		if (!PersistentFilespace_TryGetPrimaryAndMirrorUnderLock(
-													tablespaceDirEntry->filespaceOid,
-													primaryFilespaceLocation,
-													mirrorFilespaceLocation))
-		{
-			result = PersistentTablespaceGetFilespaces_FilespaceNotFound;			
-		}
-		else
-		{
-			result = PersistentTablespaceGetFilespaces_Ok;
-		}
-	}
-
-	READ_PERSISTENT_STATE_ORDERED_UNLOCK;
-
-	return result;
+	return PersistentFilespace_GetFilespaceFromTablespace(
+		tablespaceOid, primaryFilespaceLocation,
+		mirrorFilespaceLocation, filespaceOid);
 }
 
 void PersistentTablespace_GetPrimaryAndMirrorFilespaces(
@@ -562,8 +528,6 @@ void PersistentTablespace_GetPrimaryAndMirrorFilespaces(
 Oid
 PersistentTablespace_GetFileSpaceOid(Oid tablespaceOid)
 {
-	READ_PERSISTENT_STATE_ORDERED_LOCK_DECLARE;
-
 	TablespaceDirEntry tablespaceDirEntry;
 	Oid filespace = InvalidOid;
 
@@ -578,18 +542,14 @@ PersistentTablespace_GetFileSpaceOid(Oid tablespaceOid)
 
 	PersistentTablespace_VerifyInitScan();
 
-	READ_PERSISTENT_STATE_ORDERED_LOCK;
-
-	tablespaceDirEntry =
-		PersistentTablespace_FindEntryUnderLock(
-										tablespaceOid);
+	LWLockAcquire(TablespaceHashLock, LW_SHARED);
+	tablespaceDirEntry = PersistentTablespace_FindEntryUnderLock(tablespaceOid);
 	if (tablespaceDirEntry == NULL)
 		elog(ERROR, "Did not find persistent tablespace entry %u", 
 			 tablespaceOid);
 
 	filespace = tablespaceDirEntry->filespaceOid;
-
-	READ_PERSISTENT_STATE_ORDERED_UNLOCK;
+	LWLockRelease(TablespaceHashLock);
 
 	return filespace;
 }
@@ -652,25 +612,27 @@ void PersistentTablespace_MarkCreatePending(
 
 	WRITE_PERSISTENT_STATE_ORDERED_LOCK;
 
-	tablespaceDirEntry = 
-				PersistentTablespace_CreateEntryUnderLock(
-												filespaceOid,
-												tablespaceOid);
-	Assert(tablespaceDirEntry != NULL);
-
-	tablespaceDirEntry->state = PersistentFileSysState_CreatePending;
-
 	PersistentTablespace_AddTuple(
-							tablespaceDirEntry,
+							filespaceOid,
+							tablespaceOid,
+							PersistentFileSysState_CreatePending,
 							/* createMirrorDataLossTrackingSessionNum */ 0,
 							mirrorExistenceState,
 							/* reserved */ 0,
 							/* parentXid */ topXid,
-							flushToXLog);
+							flushToXLog,
+							persistentTid,
+							persistentSerialNum);
 
-	*persistentTid = tablespaceDirEntry->persistentTid;
-	*persistentSerialNum = tablespaceDirEntry->persistentSerialNum;
-		
+	WRITE_TABLESPACE_HASH_LOCK;
+	tablespaceDirEntry =
+		PersistentTablespace_CreateEntryUnderLock(filespaceOid, tablespaceOid);
+	Assert(tablespaceDirEntry != NULL);
+	tablespaceDirEntry->state = PersistentFileSysState_CreatePending;
+	ItemPointerCopy(persistentTid, &tablespaceDirEntry->persistentTid);
+	tablespaceDirEntry->persistentSerialNum = *persistentSerialNum;
+	WRITE_TABLESPACE_HASH_UNLOCK;
+
 	/*
 	 * This XLOG must be generated under the persistent write-lock.
 	 */
@@ -744,25 +706,27 @@ void PersistentTablespace_AddCreated(
 	
 	WRITE_PERSISTENT_STATE_ORDERED_LOCK;
 	
-	tablespaceDirEntry = 
-	PersistentTablespace_CreateEntryUnderLock(
-											  filespaceOid,
-											  tablespaceOid);
-	Assert(tablespaceDirEntry != NULL);
-	
-	tablespaceDirEntry->state = PersistentFileSysState_Created;
-	
 	PersistentTablespace_AddTuple(
-								  tablespaceDirEntry,
+								  filespaceOid,
+								  tablespaceOid,
+								  PersistentFileSysState_Created,
 								  /* createMirrorDataLossTrackingSessionNum */ 0,
 								  mirrorExistenceState,
 								  /* reserved */ 0,
 								  InvalidTransactionId,
-								  flushToXLog);
+								  flushToXLog,
+								  &persistentTid,
+								  &persistentSerialNum);
 
-	persistentTid = tablespaceDirEntry->persistentTid;
-	persistentSerialNum = tablespaceDirEntry->persistentSerialNum;
-		
+	WRITE_TABLESPACE_HASH_LOCK;
+	tablespaceDirEntry =
+		PersistentTablespace_CreateEntryUnderLock(filespaceOid, tablespaceOid);
+	Assert(tablespaceDirEntry != NULL);
+	tablespaceDirEntry->state = PersistentFileSysState_Created;
+	ItemPointerCopy(&persistentTid, &tablespaceDirEntry->persistentTid);
+	tablespaceDirEntry->persistentSerialNum = persistentSerialNum;
+	WRITE_TABLESPACE_HASH_UNLOCK;
+
 	WRITE_PERSISTENT_STATE_ORDERED_UNLOCK;
 	
 	if (Debug_persistent_print)
@@ -818,9 +782,8 @@ void PersistentTablespace_Created(
 
 	WRITE_PERSISTENT_STATE_ORDERED_LOCK;
 
-	tablespaceDirEntry = 
-				PersistentTablespace_FindEntryUnderLock(
-												tablespaceOid);
+	WRITE_TABLESPACE_HASH_LOCK;
+	tablespaceDirEntry = PersistentTablespace_FindEntryUnderLock(tablespaceOid);
 	if (tablespaceDirEntry == NULL)
 		elog(ERROR, "Did not find persistent tablespace entry %u", 
 			 tablespaceOid);
@@ -829,6 +792,9 @@ void PersistentTablespace_Created(
 		elog(ERROR, "Persistent tablespace entry %u expected to be in 'Create Pending' state (actual state '%s')", 
 			 tablespaceOid,
 			 PersistentFileSysObjState_Name(tablespaceDirEntry->state));
+
+	tablespaceDirEntry->state = PersistentFileSysState_Created;
+	WRITE_TABLESPACE_HASH_UNLOCK;
 
 	stateChangeResult =
 		PersistentFileSysObj_StateChange(
@@ -840,8 +806,6 @@ void PersistentTablespace_Created(
 								/* flushToXlog */ false,
 								/* oldState */ NULL,
 								/* verifiedActionCallback */ NULL);
-
-	tablespaceDirEntry->state = PersistentFileSysState_Created;
 
 	WRITE_PERSISTENT_STATE_ORDERED_UNLOCK;
 
@@ -870,27 +834,36 @@ PersistentTablespace_RemoveSegment(int16 dbid, bool ismirror)
 
 	WRITE_PERSISTENT_STATE_ORDERED_LOCK;
 
+	/*
+	 * Writes to the shared tablespace hash table are protected by
+	 * PersistentObjLock, which is held at this point.  The tablespace hash
+	 * therefore, can be read without acquiring TablespaceHashLock because we
+	 * are not making any change to the hash table in this function.
+	 */
 	while ((tablespaceDirEntry = hash_seq_search(&hstat)) != NULL)
 	{
 		PersistentFileSysObjName fsObjName;
 		Oid tblspc = tablespaceDirEntry->key.tablespaceOid;
+		ItemPointerData persistentTid;
+		uint64 persistentSerialNum;
 
 		tablespaceDirEntry = PersistentTablespace_FindEntryUnderLock(tblspc);
 
 		if (tablespaceDirEntry == NULL)
 			elog(ERROR, "Did not find persistent tablespace entry %u", 
 				 tblspc);
-
+		persistentSerialNum = tablespaceDirEntry->persistentSerialNum;
+		ItemPointerCopy(&tablespaceDirEntry->persistentTid, &persistentTid);
+		
         PersistentFileSysObjName_SetTablespaceDir(&fsObjName, tblspc);
 
 	    PersistentFileSysObj_RemoveSegment(&fsObjName,
-										   &tablespaceDirEntry->persistentTid,
-										   tablespaceDirEntry->persistentSerialNum,
+										   &persistentTid,
+										   persistentSerialNum,
 										   dbid,
 										   ismirror,
 										   /* flushToXlog */ false);
 	}
-
 	WRITE_PERSISTENT_STATE_ORDERED_UNLOCK;
 }
 
@@ -910,10 +883,13 @@ PersistentTablespace_ActivateStandby(int16 oldmaster, int16 newmaster)
 
 	WRITE_PERSISTENT_STATE_ORDERED_LOCK;
 
+	LWLockAcquire(TablespaceHashLock, LW_SHARED);
 	while ((tablespaceDirEntry = hash_seq_search(&hstat)) != NULL)
 	{
 		PersistentFileSysObjName fsObjName;
 		Oid tblspc = tablespaceDirEntry->key.tablespaceOid;
+		ItemPointerData persistentTid;
+		uint64 persistentSerialNum;
 
 		tablespaceDirEntry = PersistentTablespace_FindEntryUnderLock(tblspc);
 
@@ -921,15 +897,31 @@ PersistentTablespace_ActivateStandby(int16 oldmaster, int16 newmaster)
 			elog(ERROR, "cannot find persistent tablespace entry %u", 
 				 tblspc);
 
+		persistentSerialNum = tablespaceDirEntry->persistentSerialNum;
+		ItemPointerCopy(&tablespaceDirEntry->persistentTid, &persistentTid);
+		/*
+		 * We release TablespaceHashLock in the middle of the loop and re-acquire
+		 * it after doing persistent table change.  This is needed to prevent
+		 * holding the lock for any purpose other than to protect the tablespace
+		 * shared hash table.  Not releasing this lock could result in file I/O
+		 * and potential deadlock due to other LW locks being acquired in the
+		 * process.  Releasing the lock this way is safe because we are still
+		 * holding PersistentObjLock in exclusive mode.  Any change to the
+		 * filespace shared hash table is also protected by PersistentObjLock.
+		 */
+
+		LWLockRelease(TablespaceHashLock);
+
 		PersistentFileSysObjName_SetTablespaceDir(&fsObjName, tblspc);
 		PersistentFileSysObj_ActivateStandby(&fsObjName,
-								   &tablespaceDirEntry->persistentTid,
-								   tablespaceDirEntry->persistentSerialNum,
+								   &persistentTid,
+								   persistentSerialNum,
 								   oldmaster,
 								   newmaster,
 								   /* flushToXlog */ false);
+		LWLockAcquire(TablespaceHashLock, LW_SHARED);
 	}
-
+	LWLockRelease(TablespaceHashLock);
 	WRITE_PERSISTENT_STATE_ORDERED_UNLOCK;
 }
 
@@ -951,10 +943,13 @@ PersistentTablespace_AddMirrorAll(
 
 	WRITE_PERSISTENT_STATE_ORDERED_LOCK;
 
+	LWLockAcquire(TablespaceHashLock, LW_SHARED);
 	while ((tablespaceDirEntry = hash_seq_search(&hstat)) != NULL)
 	{
 		PersistentFileSysObjName fsObjName;
 		Oid tblspc = tablespaceDirEntry->key.tablespaceOid;
+		ItemPointerData persistentTid;
+		uint64 persistentSerialNum;
 
 		tablespaceDirEntry = PersistentTablespace_FindEntryUnderLock(tblspc);
 
@@ -962,18 +957,33 @@ PersistentTablespace_AddMirrorAll(
 			elog(ERROR, "Did not find persistent tablespace entry %u", 
 				 tblspc);
 
+		persistentSerialNum = tablespaceDirEntry->persistentSerialNum;
+		ItemPointerCopy(&tablespaceDirEntry->persistentTid, &persistentTid);
+		/*
+		 * We release TablespaceHashLock in the middle of the loop and re-acquire
+		 * it after doing persistent table change.  This is needed to prevent
+		 * holding the lock for any purpose other than to protect the tablespace
+		 * shared hash table.  Not releasing this lock could result in file I/O
+		 * and potential deadlock due to other LW locks being acquired in the
+		 * process.  Releasing the lock this way is safe because we are still
+		 * holding PersistentObjLock in exclusive mode.  Any change to the
+		 * filespace shared hash table is also protected by PersistentObjLock.
+		 */
+		LWLockRelease(TablespaceHashLock);
+
         PersistentFileSysObjName_SetTablespaceDir(&fsObjName, tblspc);
 
 	    PersistentFileSysObj_AddMirror(&fsObjName,
-    	                               &tablespaceDirEntry->persistentTid,
-        	                           tablespaceDirEntry->persistentSerialNum,
+    	                               &persistentTid,
+        	                           persistentSerialNum,
 									   pridbid,
             	                       mirdbid,
 									   NULL,
 									   true,
                     	               /* flushToXlog */ false);
+		LWLockAcquire(TablespaceHashLock, LW_SHARED);
 	}
-
+	LWLockRelease(TablespaceHashLock);
 	WRITE_PERSISTENT_STATE_ORDERED_UNLOCK;
 }
 
@@ -1024,9 +1034,8 @@ PersistentFileSysObjStateChangeResult PersistentTablespace_MarkDropPending(
 
 	WRITE_PERSISTENT_STATE_ORDERED_LOCK;
 
-	tablespaceDirEntry = 
-				PersistentTablespace_FindEntryUnderLock(
-												tablespaceOid);
+	WRITE_TABLESPACE_HASH_LOCK;
+	tablespaceDirEntry = PersistentTablespace_FindEntryUnderLock(tablespaceOid);
 	if (tablespaceDirEntry == NULL)
 		elog(ERROR, "Did not find persistent tablespace entry %u", 
 			 tablespaceOid);
@@ -1036,6 +1045,9 @@ PersistentFileSysObjStateChangeResult PersistentTablespace_MarkDropPending(
 		elog(ERROR, "Persistent tablespace entry %u expected to be in 'Create Pending' or 'Created' state (actual state '%s')", 
 			 tablespaceOid,
 			 PersistentFileSysObjState_Name(tablespaceDirEntry->state));
+
+	tablespaceDirEntry->state = PersistentFileSysState_DropPending;
+	WRITE_TABLESPACE_HASH_UNLOCK;
 
 	stateChangeResult =
 		PersistentFileSysObj_StateChange(
@@ -1048,8 +1060,6 @@ PersistentFileSysObjStateChangeResult PersistentTablespace_MarkDropPending(
 								/* oldState */ NULL,
 								/* verifiedActionCallback */ NULL);
 
-	tablespaceDirEntry->state = PersistentFileSysState_DropPending;
-	
 	WRITE_PERSISTENT_STATE_ORDERED_UNLOCK;
 
 	if (Debug_persistent_print)
@@ -1104,9 +1114,8 @@ PersistentFileSysObjStateChangeResult PersistentTablespace_MarkAbortingCreate(
 
 	WRITE_PERSISTENT_STATE_ORDERED_LOCK;
 
-	tablespaceDirEntry = 
-				PersistentTablespace_FindEntryUnderLock(
-												tablespaceOid);
+	WRITE_TABLESPACE_HASH_LOCK;
+	tablespaceDirEntry = PersistentTablespace_FindEntryUnderLock(tablespaceOid);
 	if (tablespaceDirEntry == NULL)
 		elog(ERROR, "Did not find persistent tablespace entry %u", 
 			 tablespaceOid);
@@ -1115,6 +1124,9 @@ PersistentFileSysObjStateChangeResult PersistentTablespace_MarkAbortingCreate(
 		elog(ERROR, "Persistent tablespace entry %u expected to be in 'Create Pending' (actual state '%s')", 
 			 tablespaceOid,
 			 PersistentFileSysObjState_Name(tablespaceDirEntry->state));
+
+	tablespaceDirEntry->state = PersistentFileSysState_AbortingCreate;
+	WRITE_TABLESPACE_HASH_UNLOCK;
 
 	stateChangeResult =
 		PersistentFileSysObj_StateChange(
@@ -1127,8 +1139,6 @@ PersistentFileSysObjStateChangeResult PersistentTablespace_MarkAbortingCreate(
 								/* oldState */ NULL,
 								/* verifiedActionCallback */ NULL);
 
-	tablespaceDirEntry->state = PersistentFileSysState_AbortingCreate;
-		
 	WRITE_PERSISTENT_STATE_ORDERED_UNLOCK;
 
 	if (Debug_persistent_print)
@@ -1219,19 +1229,6 @@ void PersistentTablespace_Dropped(
 
 	WRITE_PERSISTENT_STATE_ORDERED_LOCK;
 
-	tablespaceDirEntry = 
-				PersistentTablespace_FindEntryUnderLock(
-												tablespaceOid);
-	if (tablespaceDirEntry == NULL)
-		elog(ERROR, "Did not find persistent tablespace entry %u", 
-			 tablespaceOid);
-
-	if (tablespaceDirEntry->state != PersistentFileSysState_DropPending &&
-		tablespaceDirEntry->state != PersistentFileSysState_AbortingCreate)
-		elog(ERROR, "Persistent tablespace entry %u expected to be in 'Drop Pending' or 'Aborting Create' (actual state '%s')", 
-			 tablespaceOid,
-			 PersistentFileSysObjState_Name(tablespaceDirEntry->state));
-
 	stateChangeResult =
 		PersistentFileSysObj_StateChange(
 								&fsObjName,
@@ -1243,9 +1240,21 @@ void PersistentTablespace_Dropped(
 								&oldState,
 								PersistentTablespace_DroppedVerifiedActionCallback);
 
-	tablespaceDirEntry->state = PersistentFileSysState_Free;
+	WRITE_TABLESPACE_HASH_LOCK;
+	tablespaceDirEntry = PersistentTablespace_FindEntryUnderLock(tablespaceOid);
+	if (tablespaceDirEntry == NULL)
+		elog(ERROR, "Did not find persistent tablespace entry %u", 
+			 tablespaceOid);
 
+	if (tablespaceDirEntry->state != PersistentFileSysState_DropPending &&
+		tablespaceDirEntry->state != PersistentFileSysState_AbortingCreate)
+		elog(ERROR, "Persistent tablespace entry %u expected to be in 'Drop Pending' or 'Aborting Create' (actual state '%s')", 
+			 tablespaceOid,
+			 PersistentFileSysObjState_Name(tablespaceDirEntry->state));
+
+	tablespaceDirEntry->state = PersistentFileSysState_Free;
 	PersistentTablespace_RemoveEntryUnderLock(tablespaceDirEntry);
+	WRITE_TABLESPACE_HASH_UNLOCK;
 
 	WRITE_PERSISTENT_STATE_ORDERED_UNLOCK;
 
