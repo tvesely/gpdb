@@ -845,13 +845,8 @@ PersistentTablespace_RemoveSegment(int16 dbid, bool ismirror)
 	 * PersistentObjLock, which is held at this point.  The tablespace hash
 	 * therefore, can be read without acquiring TablespaceHashLock because we
 	 * are not making any change to the hash table in this function.
-	 *
-	 * We will, however, take the lock under debug to provide assert protection
-	 * under PersistentTablespace_FindEntryUnderLock().
 	 */
-#ifdef USE_ASSERT_CHECKING
 	LWLockAcquire(TablespaceHashLock, LW_SHARED);
-#endif
 	while ((tablespaceDirEntry = hash_seq_search(&hstat)) != NULL)
 	{
 		PersistentFileSysObjName fsObjName;
@@ -861,9 +856,7 @@ PersistentTablespace_RemoveSegment(int16 dbid, bool ismirror)
 
 		tablespaceDirEntry = PersistentTablespace_FindEntryUnderLock(tblspc);
 
-#ifdef USE_ASSERT_CHECKING
 		LWLockRelease(TablespaceHashLock);
-#endif
 
 		if (tablespaceDirEntry == NULL)
 			elog(ERROR, "Did not find persistent tablespace entry %u", 
@@ -879,13 +872,9 @@ PersistentTablespace_RemoveSegment(int16 dbid, bool ismirror)
 										   dbid,
 										   ismirror,
 										   /* flushToXlog */ false);
-#ifdef USE_ASSERT_CHECKING
 		LWLockAcquire(TablespaceHashLock, LW_SHARED);
-#endif
 	}
-#ifdef USE_ASSERT_CHECKING
 	LWLockRelease(TablespaceHashLock);
-#endif
 	
 	WRITE_PERSISTENT_STATE_ORDERED_UNLOCK;
 }
