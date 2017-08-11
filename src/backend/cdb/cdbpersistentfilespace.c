@@ -126,6 +126,8 @@ PersistentFilespace_FindDirUnderLock(
 
 	FilespaceDirEntryKey key;
 
+	Assert(LWLockHeldByMe(FilespaceHashLock));
+
 	if (persistentFilespaceSharedHashTable == NULL)
 		elog(PANIC, "Persistent filespace information shared-memory not setup");
 
@@ -152,6 +154,8 @@ PersistentFilespace_CreateDirUnderLock(
 	FilespaceDirEntry	filespaceDirEntry;
 
 	FilespaceDirEntryKey key;
+
+	Assert(LWLockHeldByMe(FilespaceHashLock));
 
 	if (persistentFilespaceSharedHashTable == NULL)
 		elog(PANIC, "Persistent filespace information shared-memory not setup");
@@ -180,6 +184,8 @@ PersistentFilespace_RemoveDirUnderLock(
 	FilespaceDirEntry	filespaceDirEntry)
 {
 	FilespaceDirEntry	removeFilespaceDirEntry;
+
+	Assert(LWLockHeldByMe(FilespaceHashLock));
 
 	if (persistentFilespaceSharedHashTable == NULL)
 		elog(PANIC, "Persistent filespace information shared-memory not setup");
