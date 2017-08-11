@@ -840,12 +840,6 @@ PersistentTablespace_RemoveSegment(int16 dbid, bool ismirror)
 
 	WRITE_PERSISTENT_STATE_ORDERED_LOCK;
 
-	/*
-	 * Writes to the shared tablespace hash table are protected by
-	 * PersistentObjLock, which is held at this point.  The tablespace hash
-	 * therefore, can be read without acquiring TablespaceHashLock because we
-	 * are not making any change to the hash table in this function.
-	 */
 	LWLockAcquire(TablespaceHashLock, LW_SHARED);
 	while ((tablespaceDirEntry = hash_seq_search(&hstat)) != NULL)
 	{
