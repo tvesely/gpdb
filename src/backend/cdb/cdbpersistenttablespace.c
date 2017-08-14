@@ -65,7 +65,10 @@ typedef struct PersistentTablespaceData
 	}
 
 #define WRITE_TABLESPACE_HASH_UNLOCK \
-	LWLockRelease(TablespaceHashLock);
+	{ \
+		Assert(LWLockHeldByMe(PersistentObjLock)); \
+		LWLockRelease(TablespaceHashLock); \
+	}
 
 /*
  * Global Variables

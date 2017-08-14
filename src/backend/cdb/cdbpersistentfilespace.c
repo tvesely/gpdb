@@ -90,7 +90,10 @@ typedef FilespaceDirEntryData *FilespaceDirEntry;
 	}
 
 #define WRITE_FILESPACE_HASH_UNLOCK \
-	LWLockRelease(FilespaceHashLock);
+	{ \
+		Assert(LWLockHeldByMe(PersistentObjLock)); \
+		LWLockRelease(FilespaceHashLock); \
+	}
 /*
  * Global Variables
  */
