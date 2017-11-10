@@ -85,6 +85,12 @@ test_probeWalRepPublishUpdate_for_shutdown_requested(void **state)
 	assert_false(result);
 }
 
+static int
+check_config_vals(const Datum *value, const Datum *check_value)
+{
+	return datumIsEqual(value[Anum_gp_segment_configuration_status-1], check_value[Anum_gp_segment_configuration_status-1], true, false);
+}
+
 static void
 probeWalRepUpdateConfig_will_be_called_with(
 		int16 dbid,
@@ -147,10 +153,14 @@ probeWalRepUpdateConfig_will_be_called_with(
 	expect_any(systable_getnext, sysscan);
 	will_return(systable_getnext, &config_tuple);
 
+	Datum *configvals = palloc(sizeof(Datum) * Natts_gp_segment_configuration);
+	configvals[Anum_gp_segment_configuration_status-1] =
+			CharGetDatum(IsSegmentAlive ? GP_SEGMENT_CONFIGURATION_STATUS_UP :
+						 GP_SEGMENT_CONFIGURATION_STATUS_DOWN);
 	HeapTuple new_tuple = palloc(sizeof(HeapTupleData));
 	expect_any(heap_modify_tuple, tuple);
 	expect_any(heap_modify_tuple, tupleDesc);
-	expect_any(heap_modify_tuple, replValues);
+	expect_check(heap_modify_tuple, replValues, check_config_vals, configvals);
 	expect_any(heap_modify_tuple, replIsnull);
 	expect_any(heap_modify_tuple, doReplace);
 	will_return(heap_modify_tuple, new_tuple);
@@ -209,10 +219,20 @@ mock_primary_and_mirror_probe_response(
 		will_be_called(GetTransactionSnapshot);
 
 		/* mock probeWalRepUpdateConfig */
-		probeWalRepUpdateConfig_will_be_called_with(
+		if(!expected_isPrimaryAlive)
+		{
+			probeWalRepUpdateConfig_will_be_called_with(
 				primary.dbid,
 				primary.segindex,
 				response.result.isPrimaryAlive);
+		}
+		else if(!expected_isMirrorAlive)
+		{
+			probeWalRepUpdateConfig_will_be_called_with(
+					mirror.dbid,
+					mirror.segindex,
+					response.result.isMirrorAlive);
+		}
 
 		will_be_called(CommitTransactionCommand);
 	}
