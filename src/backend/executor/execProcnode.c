@@ -138,6 +138,12 @@
 #include "tcop/tcopprot.h"
 #include "utils/metrics_utils.h"
 
+VectorExecMthd vmthd = {};
+#ifdef CDB_TRACE_EXECUTOR
+#include "nodes/print.h"
+static void ExecCdbTraceNode(PlanState *node, bool entry, TupleTableSlot *result);
+#endif   /* CDB_TRACE_EXECUTOR */
+
  /* flags bits for planstate walker */
 #define PSW_IGNORE_INITPLAN    0x01
 
@@ -257,6 +263,9 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 	PlanState  *result;
 	List	   *subps;
 	ListCell   *l;
+    if(vmthd.vectorized_executor_enable && vmthd.ExecInitNode_Hook
+			&& (result = vmthd.ExecInitNode_Hook(node,estate,eflags)))
+		return result;
 
 	/*
 	 * do nothing when we get to the end of a leaf on tree.
@@ -952,6 +961,10 @@ TupleTableSlot *
 ExecProcNode(PlanState *node)
 {
 	TupleTableSlot *result = NULL;
+    if(vmthd.vectorized_executor_enable && vmthd.ExecProcNode_Hook
+	   && (result = vmthd.ExecProcNode_Hook(node)))
+		return result;
+
 
 	START_MEMORY_ACCOUNT(node->memoryAccountId);
 	{
@@ -1416,6 +1429,12 @@ ExecUpdateTransportState(PlanState *node, ChunkTransportState * state)
 void
 ExecEndNode(PlanState *node)
 {
+	if(vmthd.vectorized_executor_enable && vmthd.ExecEndNode_Hook
+	   && vmthd.ExecEndNode_Hook(node))
+		return ;
+
+	ListCell   *subp;
+
 	/*
 	 * do nothing when we get to the end of a leaf on tree.
 	 */
