@@ -32,7 +32,7 @@ static void write_log_will_be_called()
 	will_be_called(write_log);
 }
 
-static void probeTimeout_mock_timeout(FtsConnectionInfo *info)
+static void probeTimeout_mock_timeout(probe_response_per_segment *info)
 {
 	/*
 	 * set info->startTime to set proper elapse_ms
@@ -45,7 +45,7 @@ static void probeTimeout_mock_timeout(FtsConnectionInfo *info)
 	write_log_will_be_called();
 }
 
-static void probePollIn_mock_success(FtsConnectionInfo *info)
+static void probePollIn_mock_success(probe_response_per_segment *info)
 {
 	expect_any(PQsocket, conn);
 	will_be_called(PQsocket);
@@ -54,7 +54,7 @@ static void probePollIn_mock_success(FtsConnectionInfo *info)
 }
 
 
-static void probePollIn_mock_timeout(FtsConnectionInfo *info)
+static void probePollIn_mock_timeout(probe_response_per_segment *info)
 {
 	expect_any(PQsocket, conn);
 	will_be_called(PQsocket);
@@ -121,7 +121,7 @@ static void PQgetvalue_will_return(int attnum, bool *value)
 void
 test_ftsReceive_when_fts_handler_hung(void **state)
 {
-	FtsConnectionInfo info;
+	probe_response_per_segment info;
 	struct pg_conn conn;
 
 	info.conn = &conn;
@@ -148,7 +148,7 @@ test_ftsReceive_when_fts_handler_hung(void **state)
 void
 test_ftsReceive_when_fts_handler_FATAL(void **state)
 {
-	FtsConnectionInfo info;
+	probe_response_per_segment info;
 	struct pg_conn conn;
 
 	info.conn = &conn;
@@ -176,7 +176,7 @@ test_ftsReceive_when_fts_handler_FATAL(void **state)
 void
 test_ftsReceive_when_fts_handler_ERROR(void **state)
 {
-	FtsConnectionInfo info;
+	probe_response_per_segment info;
 	struct pg_conn conn;
 
 	info.conn = &conn;
@@ -226,14 +226,11 @@ static void ftsReceive_request_retry_setup()
 void
 test_ftsReceive_when_primary_request_retry_true(void **state)
 {
-	FtsConnectionInfo info;
+	probe_response_per_segment info;
 	struct pg_conn conn;
-	probe_result result;
-	char str[50] = FTS_MSG_PROBE;
 
 	info.conn = &conn;
-	info.result = &result;
-	info.message = &str;
+	info.state = FTS_PROBE_SEGMENT;
 
 	ftsReceive_request_retry_setup();
 	write_log_will_be_called();
@@ -248,14 +245,11 @@ test_ftsReceive_when_primary_request_retry_true(void **state)
 void
 test_ftsReceive_when_primary_request_retry_false(void **state)
 {
-	FtsConnectionInfo info;
+	probe_response_per_segment info;
 	struct pg_conn conn;
-	probe_result result;
-	char str[50] = FTS_MSG_PROBE;
 
 	info.conn = &conn;
-	info.result = &result;
-	info.message = &str;
+	info.state = FTS_PROBE_SEGMENT;
 
 	ftsReceive_request_retry_setup();
 	write_log_will_be_called();

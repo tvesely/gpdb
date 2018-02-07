@@ -510,7 +510,6 @@ test_PrimaryUpMirrorDownNotInSync_to_PrimayUpMirrorUpNotInSync(void **state)
 	 */
 	context.responses[0].result.isPrimaryAlive = true;
 	context.responses[0].result.isMirrorAlive = true;
-	context.responses[0].isScheduled = true;
 	context.responses[0].result.isSyncRepEnabled = true;
 
 	/* no change */
@@ -535,7 +534,6 @@ test_PrimaryUpMirrorDownNotInSync_to_PrimayUpMirrorUpNotInSync(void **state)
 
 	/* we do not expect to send syncrep off libpq message */
 	assert_false(FtsWalRepSetupMessageContext(&context));
-	assert_true(context.responses[0].isScheduled);
 
 	assert_true(is_updated);
 	pfree(cdb_component_dbs);
@@ -927,6 +925,32 @@ test_PrimaryUpMirrorDownNotInSync_to_PrimaryDown(void **state)
 	pfree(cdb_component_dbs);
 }
 
+void
+test_FtsWalRepInitProbeContext_initial_state(void **state)
+{
+	fts_context context;
+	CdbComponentDatabases *cdb_component_dbs;
+
+	cdb_component_dbs = InitTestCdb(2,
+									true,
+									GP_SEGMENT_CONFIGURATION_MODE_NOTINSYNC);
+	FtsWalRepInitProbeContext(cdb_component_dbs, &context);
+	int i;
+	
+	for (i=0; i < context->num_of_requests; i++)
+	{
+		assert_true(context->responses[i].state == FTS_INITIAL_STATE);
+		assert_true(context->responses[i].retry_count == 0);
+		assert_true(context->responses[i].conn == NULL);
+		assert_true(context->responses[i].probe_errno == 0);
+		assert_true(context->responses[i].result.dbid == context->respones[i].segment_db_info->dbid);
+		assert_false(context->responses[i].result.isPrimaryAlive);
+		assert_true(context->responses[i].result.isMirrorAlive);
+		assert_false(context->responses[i].result.isInSync);
+		assert_true(strcmp(context->responses[i].result.message, FTS_MSG_PROBE) == 0);
+	}
+}
+
 int
 main(int argc, char *argv[])
 {
@@ -954,7 +978,8 @@ main(int argc, char *argv[])
 		unit_test(test_PrimaryUpMirrorDownNotInSync_to_PrimayUpMirrorUpSync),
 		unit_test(test_PrimaryUpMirrorDownNotInSync_to_PrimayUpMirrorUpNotInSync),
 		unit_test(test_PrimaryUpMirrorDownNotInSync_to_PrimayUpMirrorDownNotInSync),
-		unit_test(test_PrimaryUpMirrorDownNotInSync_to_PrimaryDown)
+		unit_test(test_PrimaryUpMirrorDownNotInSync_to_PrimaryDown),
+		unit_test(test_FtsWalRepInitProbeContext_initial_state)
 		/*-----------------------------------------------------------------------*/
 	};
 

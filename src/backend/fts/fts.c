@@ -546,7 +546,7 @@ probeWalRepPublishUpdate(CdbComponentDatabases *cdbs, fts_context *context)
 		 */
 		if (!IsMirrorAlive && response->result.isSyncRepEnabled)
 		{
-			response->message = FTS_MSG_SYNCREP_OFF;
+			response->state = FTS_SYNCREP_SEGMENT;
 			/*
 			 * Mirror must be marked down in FTS configuration before primary
 			 * can be notified to unblock commits.
@@ -559,7 +559,7 @@ probeWalRepPublishUpdate(CdbComponentDatabases *cdbs, fts_context *context)
 			Assert(SEGMENT_IS_IN_SYNC(primary));
 
 			/* The primary is down; promote the mirror to primary. */
-			response->message = FTS_MSG_PROMOTE;
+			response->state = FTS_PROMOTE_SEGMENT;
 			response->segment_db_info = mirror;
 
 			/*
@@ -580,7 +580,7 @@ probeWalRepPublishUpdate(CdbComponentDatabases *cdbs, fts_context *context)
 			Assert(!response->result.isSyncRepEnabled);
 			Assert(!UpdateMirror);
 			Assert(!UpdatePrimary);
-			response->message = FTS_MSG_PROMOTE;
+			response->state = FTS_PROMOTE_SEGMENT;
 		}
 
 		/*
@@ -702,10 +702,10 @@ FtsWalRepInitProbeContext(CdbComponentDatabases *cdbs, fts_context *context)
 		response->result.isSyncRepEnabled = false;
 		response->result.retryRequested = false;
 		response->result.isRoleMirror = false;
-		response->message = FTS_MSG_PROBE;
+		response->result.dbid = primary->dbid;
+		response->state = FTS_INITIAL_STATE;
 
 		response->segment_db_info = primary;
-		response->isScheduled = false;
 
 		Assert(response_index < context->num_of_requests);
 		response_index ++;
@@ -718,39 +718,39 @@ FtsWalRepInitProbeContext(CdbComponentDatabases *cdbs, fts_context *context)
  * time this funtion is called.  Returns true if one or more segments need to
  * be messaged.
  */
-static bool
-FtsWalRepSetupMessageContext(fts_context *context)
-{
-	int i;
-	bool message_segments = false;
+/* static bool */
+/* FtsWalRepSetupMessageContext(fts_context *context) */
+/* { */
+/* 	int i; */
+/* 	bool message_segments = false; */
 
-	if (!FtsIsActive())
-		return false;
+/* 	if (!FtsIsActive()) */
+/* 		return false; */
 
-	for (i = 0; i < context->num_of_requests; i++)
-	{
-		probe_response_per_segment *response = &context->responses[i];
-		if (strcmp(response->message, FTS_MSG_PROBE) == 0)
-		{
-			response->message = NULL;
-			response->isScheduled = true;
-		}
-		else if ((response->message == FTS_MSG_SYNCREP_OFF)
-				 || (response->message == FTS_MSG_PROMOTE))
-		{
-			response->isScheduled = false;
-			response->result.isPrimaryAlive = false;
-			response->result.isInSync = false;
-			response->result.isSyncRepEnabled = false;
-			message_segments = true;
-		}
-		else
-		{
-			Assert(false);
-		}
-	}
-	return message_segments;
-}
+/* 	for (i = 0; i < context->num_of_requests; i++) */
+/* 	{ */
+/* 		probe_response_per_segment *response = &context->responses[i]; */
+/* 		if (strcmp(response->message, FTS_MSG_PROBE) == 0) */
+/* 		{ */
+/* 			response->message = NULL; */
+/* 			response->isScheduled = true; */
+/* 		} */
+/* 		else if ((response->message == FTS_MSG_SYNCREP_OFF) */
+/* 				 || (response->message == FTS_MSG_PROMOTE)) */
+/* 		{ */
+/* 			response->isScheduled = false; */
+/* 			response->result.isPrimaryAlive = false; */
+/* 			response->result.isInSync = false; */
+/* 			response->result.isSyncRepEnabled = false; */
+/* 			message_segments = true; */
+/* 		} */
+/* 		else */
+/* 		{ */
+/* 			Assert(false); */
+/* 		} */
+/* 	} */
+/* 	return message_segments; */
+/* } */
 
 static
 void FtsLoop()
@@ -855,8 +855,8 @@ void FtsLoop()
 
 		updated_probe_state = probeWalRepPublishUpdate(cdbs, &context);
 
-		if (FtsWalRepSetupMessageContext(&context))
-			FtsWalRepMessageSegments(&context);
+		/* if (FtsWalRepSetupMessageContext(&context)) */
+		/* 	FtsWalRepMessageSegments(&context); */
 
 		MemoryContextSwitchTo(oldContext);
 

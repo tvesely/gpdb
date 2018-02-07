@@ -45,12 +45,45 @@ typedef struct
 	bool retryRequested;
 } probe_result;
 
+/* States used by FTS main loop for probing segments. */
+typedef enum
+{
+	FTS_INITIAL_STATE,
+
+	FTS_PROBE_SEGMENT,     /* ready to send probe message */
+	FTS_SYNCREP_SEGMENT,   /* ready to send syncrep off message */
+	FTS_PROMOTE_SEGMENT,   /* ready to send promote message */
+
+	FTS_PROBE_SUCCESS,     /* response to probe is ready for processing */
+	FTS_SYNCREP_SUCCESS,   /* syncrep was turned off by the primary */
+	FTS_PROMOTE_SUCCESS,   /* promotion was triggered on the mirror */
+
+	/*
+	 * Failure states are reached as soon as a failure is encountered. The
+	 * corresponding message is retried and if the failure persists after max
+	 * retries, corrective action is taken by probePublishUpdate().
+	 */
+	FTS_PROBE_FAILED,      /* the segment should be considered down */
+	FTS_SYNCREP_FAILED,    /* XXX double fault? */
+	FTS_PROMOTE_FAILED,    /* double fault */
+
+	/* 
+	 * This state is reached while processing probe response, e.g. probe failed
+	 * to primary whose mirror is already down.  Or if we failed to send
+	 * promote message to a mirror whose primary was found down.
+	 */
+	FTS_DOUBLE_FAULT,
+} FtsProbeState;
+
 typedef struct
 {
 	CdbComponentDatabaseInfo *segment_db_info;
 	probe_result result;
-	bool isScheduled;
-	const char *message;
+	FtsProbeState state;
+	GpMonotonicTime startTime;           /* probe start timestamp */
+	int16 probe_errno;                   /* saved errno from the latest system call */
+	struct pg_conn *conn;                        /* libpq connection object */
+	int retry_count;
 } probe_response_per_segment;
 
 typedef struct
