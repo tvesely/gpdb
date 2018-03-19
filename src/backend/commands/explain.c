@@ -1571,6 +1571,11 @@ ExplainNode(PlanState *planstate, List *ancestors,
 		show_dispatch_info(es->currentSlice, es, plan);
 	}
 
+	if(plan->vectorized)
+		appendStringInfoString(es->str, "vectorized ");
+
+	appendStringInfoString(es->str, pname);
+
 	switch (nodeTag(plan))
 	{
 		case T_SeqScan:

@@ -1461,6 +1461,9 @@ typedef struct PlanState
 
 	/* MemoryAccount to use for recording the memory usage of different plan nodes. */
 	MemoryAccountIdType memoryAccountId;
+		
+	/* state of executor operator  */
+	void* vectorized;
 } PlanState;
 
 /* Gpperfmon helper functions defined in execGpmon.c */

@@ -305,6 +305,7 @@ _outPlanInfo(StringInfo str, const Plan *node)
     WRITE_NODE_FIELD(initPlan);
 
 	WRITE_UINT64_FIELD(operatorMemKB);
+	WRITE_BOOL_FIELD(vectorized);
 }
 
 static void
