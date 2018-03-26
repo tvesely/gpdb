@@ -21,15 +21,25 @@
 #include "vexecutor.h"
 #include "utils/guc.h"
 #include "vcheck.h"
+#include "miscadmin.h"
+#include "tuplebatch.h"
+#include "executor/nodeTableScan.h"
+#include "cdb/cdbvars.h"
+#include "utils/syscache.h"
+#include "execVScan.h"
 
 PG_MODULE_MAGIC;
-
+int BATCHSIZE = 1024;
+static int MINBATCHSIZE = 1;
+static int MAXBATCHSIZE = 4096;
 /*
  * hook function
  */
-static PlanState* VExecInitNode(PlanState *node,EState *eState,int eflags);
+static PlanState* VExecInitNode(PlanState *node,EState *eState,int eflags,MemoryAccountIdType ptr);
 static TupleTableSlot* VExecProcNode(PlanState *node);
 static bool VExecEndNode(PlanState *node);
+static Oid GetNType(Oid vtype);
+extern int currentSliceId;
 
 /*
  * _PG_init is called when the module is loaded. In this function we save the
@@ -44,6 +54,7 @@ _PG_init(void)
 	vmthd.ExecInitNode_Hook = VExecInitNode;
 	vmthd.ExecProcNode_Hook = VExecProcNode;
 	vmthd.ExecEndNode_Hook = VExecEndNode;
+	vmthd.GetNType = GetNType;
 	DefineCustomBoolVariable("vectorized_executor_enable",
 	                         gettext_noop("enable vectorized executor"),
 	                         NULL,
@@ -52,6 +63,16 @@ _PG_init(void)
 	                         PGC_USERSET, /* context */
 	                         0, /* flags */
 	                         NULL,NULL,NULL /* hooks */);
+
+    DefineCustomIntVariable("vectorized_batch_size",
+							gettext_noop("set vectorized execution batch size"),
+                            NULL,
+                            &BATCHSIZE,
+                            1024,
+                            MINBATCHSIZE,MAXBATCHSIZE,
+							PGC_USERSET,
+                            0,
+							NULL,NULL,NULL);
 }
 
 /*
@@ -68,11 +89,47 @@ _PG_fini(void)
 	vmthd.ExecEndNode_Hook = NULL;
 }
 
-static PlanState* VExecInitNode(PlanState *node,EState *eState,int eflags)
+/*
+ *
+ * backportTupleDescriptor
+ *			Backport the TupleDesc information to normal type. Due to Vectorized type unrecognizable in normal execution node,
+ *			the TupleDesc structure should backport metadata to normal type before we do V->N result pop up.
+ */
+static void backportTupleDescriptor(PlanState* ps,TupleDesc td)
+{
+	HeapTuple tuple;
+	Oid oidtypeid;
+	Form_pg_type  typeForm;
+	for(int i = 0;i < td->natts; ++i)
+	{
+		oidtypeid = GetVFunc(td->attrs[i]->atttypid)->ntype;
+
+		tuple = SearchSysCache1(TYPEOID, ObjectIdGetDatum(oidtypeid));
+
+		if (!HeapTupleIsValid(tuple))
+			elog(ERROR, "cache lookup failed for type %u", oidtypeid);
+		typeForm = (Form_pg_type) GETSTRUCT(tuple);
+
+		td->attrs[i]->atttypid = oidtypeid;
+		td->attrs[i]->attlen = typeForm->typlen;
+		td->attrs[i]->attbyval = typeForm->typbyval;
+		td->attrs[i]->attalign = typeForm->typalign;
+		td->attrs[i]->attstorage = typeForm->typstorage;
+
+		ReleaseSysCache(tuple);
+	}
+
+	ExecAssignResultType(ps,td);
+}
+
+static PlanState* VExecInitNode(PlanState *node,EState *eState,int eflags,
+                                MemoryAccountIdType curMemoryAccountId)
 {
 	Plan *plan = node->plan;
 	PlanState *subState = NULL;
 	VectorizedState *vstate = (VectorizedState*)palloc0(sizeof(VectorizedState));
+
+	elog(DEBUG3, "PG VEXECINIT NODE");
 
 	if(NULL == node)
 		return node;
@@ -98,20 +155,76 @@ static PlanState* VExecInitNode(PlanState *node,EState *eState,int eflags)
 		((VectorizedState*)(subState->vectorized))->parent = node;
 	}
 
-	//***TODO:process the vectorized execution operators here
+	if(Gp_role != GP_ROLE_DISPATCH)
+	{
+		switch (nodeTag(node) )
+		{
+			case T_AppendOnlyScan:
+#if 0
+			case T_ParquetScan:
+#endif
+			case T_TableScanState:
+				START_MEMORY_ACCOUNT(curMemoryAccountId);
+					{
+						TupleDesc td = ((TableScanState *)node)->ss.ss_ScanTupleSlot->tts_tupleDescriptor;
+						((TableScanState *)node)->ss.ss_ScanTupleSlot->PRIVATE_tb = PointerGetDatum(tbGenerate(td->natts,BATCHSIZE));
+						node->ps_ResultTupleSlot->PRIVATE_tb = PointerGetDatum(tbGenerate(td->natts,BATCHSIZE));
+						/* if V->N */
+						backportTupleDescriptor(node,node->ps_ResultTupleSlot->tts_tupleDescriptor);
+					}
+						END_MEMORY_ACCOUNT();
+				break;
+			default:
+				((VectorizedState *)node->vectorized)->vectorized = false;
+				break;
+		}
+	}
 
-	elog(DEBUG3, "PG VEXEC INIT NODE");
 	return node;
 }
 static TupleTableSlot* VExecProcNode(PlanState *node)
 {
-	return NULL;
+    TupleTableSlot* result = NULL;
+    switch(nodeTag(node))
+    {
+#if 0
+        case T_ParquetScanState:
+#endif
+        case T_AppendOnlyScanState:
+        case T_TableScanState:
+            result = ExecTableVScan((ScanState*)node);
+            break;
+        default:
+            break;
+    }
+    return result;
 }
 
 static bool VExecEndNode(PlanState *node)
 {
+    if(Gp_role == GP_ROLE_DISPATCH)
+		return false;
+
 	elog(DEBUG3, "PG VEXEC END NODE");
-	return false;
+	bool ret = false;
+	switch (nodeTag(node))
+	{
+		case T_AppendOnlyScanState:
+#if 0
+		case T_ParquetScanState:
+#endif
+            tbDestroy((TupleBatch *) (&node->ps_ResultTupleSlot->PRIVATE_tb));
+            tbDestroy((TupleBatch *) (&((TableScanState *) node)->ss.ss_ScanTupleSlot->PRIVATE_tb));
+			ret = true;
+			break;
+		case T_TableScanState:
+			ExecEndTableScan((TableScanState *)node);
+			ret = true;
+			break;
+		default:
+			break;
+	}
+	return ret;
 }
 
 /* check if there is an vectorized execution operator */
@@ -134,4 +247,10 @@ HasVecExecOprator(NodeTag tag)
 	}
 
 	return result;
+}
+
+static Oid GetNType(Oid vtype)
+{
+	const vFuncMap* vf = GetVFunc(vtype);
+	return vf == NULL ? InvalidOid : vf->ntype;
 }

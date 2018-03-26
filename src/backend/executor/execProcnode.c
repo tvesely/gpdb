@@ -901,19 +901,17 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 	if (result != NULL)
 	{
 		saveExecutorMemoryAccount(result, curMemoryAccountId);
+
+		/*
+		* If the plan node can be vectorized and vectorized is enable, enter the
+		* vectorized execution operators.
+		*/
+		if(vmthd.vectorized_executor_enable
+		   && vmthd.ExecInitNode_Hook)
+			result = vmthd.ExecInitNode_Hook(result,estate,eflags,curMemoryAccountId);
+
 	}
 
-	/*
-	* If the plan node can be vectorized and vectorized is enable, enter the
-	* vectorized execution operators.
-	*/
-	if(vmthd.vectorized_executor_enable
-		&& vmthd.ExecInitNode_Hook
-		&& (result = vmthd.ExecInitNode_Hook(result,estate,eflags)))
-	{
-		/* New vectorized Plan node is got. */
-		return result;
-	}
 
 	return result;
 }
@@ -971,10 +969,6 @@ TupleTableSlot *
 ExecProcNode(PlanState *node)
 {
 	TupleTableSlot *result = NULL;
-    if(vmthd.vectorized_executor_enable && vmthd.ExecProcNode_Hook
-	   && (result = vmthd.ExecProcNode_Hook(node)))
-		return result;
-
 
 	START_MEMORY_ACCOUNT(node->memoryAccountId);
 	{
@@ -1009,6 +1003,12 @@ ExecProcNode(PlanState *node)
 			(*query_info_collect_hook)(METRICS_PLAN_NODE_EXECUTING, node);
 		node->fHadSentNodeStart = true;
 	}
+
+	if(vmthd.vectorized_executor_enable
+	   && node->vectorized
+	   && vmthd.ExecProcNode_Hook
+	   && (result = vmthd.ExecProcNode_Hook(node)))
+		goto Exec_Jmp_Done;
 
 	switch (nodeTag(node))
 	{
@@ -1211,6 +1211,8 @@ ExecProcNode(PlanState *node)
 			result = NULL;
 			break;
 	}
+
+Exec_Jmp_Done:
 
 	if (!TupIsNull(result))
 	{
@@ -1475,8 +1477,19 @@ ExecEndNode(PlanState *node)
 		node->cdbexplainbuf = NULL;
 	}
 
-	switch (nodeTag(node))
+	if(vmthd.vectorized_executor_enable
+	   && node->vectorized
+	   && vmthd.ExecEndNode_Hook
+	   && vmthd.ExecEndNode_Hook(node))
 	{
+		estate->currentSliceIdInPlan = origSliceIdInPlan;
+		estate->currentExecutingSliceId = origExecutingSliceId;
+
+		return ;
+	}
+
+    switch (nodeTag(node))
+{
 			/*
 			 * control nodes
 			 */
