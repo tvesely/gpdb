@@ -118,8 +118,20 @@ typedef enum AoExecutorBlockKind
 	AoExecutorBlockKind_None = 0,
 	AoExecutorBlockKind_VarBlock,
 	AoExecutorBlockKind_SingleRow,
-	MaxAoExecutorBlockKind		/* must always be last */
-}			AoExecutorBlockKind;
+	MaxAoExecutorBlockKind /* must always be last */
+} AoExecutorBlockKind;
+
+MemTuple
+appendonlygettup(AppendOnlyScanDesc scan,
+				 ScanDirection dir __attribute__((unused)),
+				 int nkeys,
+				 ScanKey key,
+				 TupleTableSlot *slot);
+
+static void
+AppendOnlyExecutionReadBlock_SetSegmentFileNum(
+	AppendOnlyExecutorReadBlock		*executorReadBlock,
+	int								segmentFileNum);
 
 static void AppendOnlyExecutionReadBlock_SetSegmentFileNum(
 											   AppendOnlyExecutorReadBlock *executorReadBlock,
@@ -1304,7 +1316,7 @@ getNextBlock(AppendOnlyScanDesc scan)
  * the scankeys.
  * ----------------
  */
-static MemTuple
+MemTuple
 appendonlygettup(AppendOnlyScanDesc scan,
 				 ScanDirection dir __attribute__((unused)),
 				 int nkeys,

@@ -20,6 +20,7 @@
 #include "execVScan.h"
 #include "miscadmin.h"
 #include "execVQual.h"
+#include "ao_reader.h"
 
 static TupleTableSlot*
 ExecVScan(ScanState *node, ExecScanAccessMtd accessMtd);
@@ -32,16 +33,15 @@ getVScanMethod(int tableType)
 					//HEAPSCAN
 					{
 					},
-					//APPENDONLYSCAN
-					{
-							&AppendOnlyScanNext, NULL, &BeginScanAppendOnlyRelation, &EndScanAppendOnlyRelation,
-							&ReScanAppendOnlyRelation, &MarkRestrNotAllowed, &MarkRestrNotAllowed
-					},
+                    //APPENDONLYSCAN
+                    {
+						&AppendOnlyVScanNext, NULL, &BeginVScanAppendOnlyRelation, &EndVScanAppendOnlyRelation,
+                                                                                 NULL,NULL,NULL
+                    },
 					//AOCOSCAN
 					{
 							/* The same set of methods serve both AO and AOCO scans */
-							&AppendOnlyScanNext, NULL, &BeginScanAppendOnlyRelation, &EndScanAppendOnlyRelation,
-							&ReScanAppendOnlyRelation, &MarkRestrNotAllowed, &MarkRestrNotAllowed
+						&AppendOnlyScanNext, NULL, &BeginScanAppendOnlyRelation, &EndScanAppendOnlyRelation, NULL, NULL, NULL
 					},
 
 #if 0
@@ -138,6 +138,7 @@ ExecVScan(ScanState *node, ExecScanAccessMtd accessMtd)
      * storage allocated in the previous tuple cycle.
      */
     econtext = node->ps.ps_ExprContext;
+
     ResetExprContext(econtext);
 
     /*
@@ -190,8 +191,7 @@ ExecVScan(ScanState *node, ExecScanAccessMtd accessMtd)
                  * and return it.
                  */
                 ((TupleBatch)projInfo->pi_slot->PRIVATE_tb)->nrows = ((TupleBatch)slot->PRIVATE_tb)->nrows;
-                memcpy(((TupleBatch)projInfo->pi_slot->PRIVATE_tb)->skip,
-                       ((TupleBatch)slot->PRIVATE_tb)->skip,sizeof(bool) * ((TupleBatch)slot->PRIVATE_tb)->nrows);
+                ((TupleBatch)projInfo->pi_slot->PRIVATE_tb)->skip = ((TupleBatch)slot->PRIVATE_tb)->skip;
                 return ExecVProject(projInfo, NULL);
             }
             else
