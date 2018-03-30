@@ -19,6 +19,7 @@
 
 #include "execVScan.h"
 #include "miscadmin.h"
+#include "execVQual.h"
 
 static TupleTableSlot*
 ExecVScan(ScanState *node, ExecScanAccessMtd accessMtd);
@@ -44,11 +45,11 @@ getVScanMethod(int tableType)
 					},
 
 #if 0
-					//PARQUETSCAN
-					{
-							&ParquetScanNext, NULL, &BeginScanParquetRelation, &EndScanParquetRelation,
-							&ReScanParquetRelation, &MarkRestrNotAllowed, &MarkRestrNotAllowed
-					}
+                    //PARQUETSCAN
+                    {
+                            &ParquetVScanNext, &BeginScanParquetRelation, &EndScanParquetRelation,
+                            NULL,NULL,NULL
+                    }
 #endif
 			};
 
@@ -62,6 +63,35 @@ getVScanMethod(int tableType)
 	return &scanMethods[tableType];
 }
 
+/*
+ * ExecTableVScanVirtualLayer
+ *          translate a batch of tuple to single one if scan parent is normal execution node
+ *
+ * VirtualNodeProc may not fill tuple data in slot success, due to qualification tag.
+ * invoke scan table functoin if no tuple can pop up in TupleBatch
+ */
+TupleTableSlot *ExecTableVScanVirtualLayer(ScanState *scanState)
+{
+    VectorizedState* vs = (VectorizedState*)scanState->ps.vectorized;
+    VectorizedState* pvs = vs->parent->vectorized;
+
+    if(pvs->vectorized)
+        return ExecVScan(scanState,getVScanMethod(scanState->tableType)->accessMethod);
+    else
+    {
+        TupleTableSlot* slot = scanState->ps.ps_ProjInfo ? scanState->ps.ps_ResultTupleSlot : scanState->ss_ScanTupleSlot;
+        bool succ = VirtualNodeProc(scanState,slot);
+
+        if(!succ)
+        {
+            slot = ExecTableVScan(scanState);
+            VirtualNodeProc(scanState,slot);
+        }
+
+        return slot;
+    }
+}
+
 TupleTableSlot *ExecTableVScan(ScanState *scanState)
 {
 	if (scanState->scan_state == SCAN_INIT ||
@@ -70,7 +100,9 @@ TupleTableSlot *ExecTableVScan(ScanState *scanState)
 		getVScanMethod(scanState->tableType)->beginScanMethod(scanState);
 	}
 
-	TupleTableSlot *slot = ExecVScan(scanState,getVScanMethod(scanState->tableType)->accessMethod);
+    tbReset(scanState->ss_ScanTupleSlot->PRIVATE_tb);
+    tbReset(scanState->ps.ps_ResultTupleSlot->PRIVATE_tb);
+    TupleTableSlot *slot = ExecVScan(scanState,getVScanMethod(scanState->tableType)->accessMethod);
 
 	if (TupIsNull(slot) && !scanState->ps.delayEagerFree)
 	{
@@ -84,93 +116,98 @@ TupleTableSlot *ExecTableVScan(ScanState *scanState)
 TupleTableSlot*
 ExecVScan(ScanState *node, ExecScanAccessMtd accessMtd)
 {
-	ExprContext *econtext;
-	List	   *qual;
-	ProjectionInfo *projInfo;
+    ExprContext *econtext;
+    List	   *qual;
+    ProjectionInfo *projInfo;
 
-	/*
-	 * Fetch data from node
-	 */
-	qual = node->ps.qual;
-	projInfo = node->ps.ps_ProjInfo;
+    /*
+     * Fetch data from node
+     */
+    qual = node->ps.qual;
+    projInfo = node->ps.ps_ProjInfo;
 
-	/*
-	 * If we have neither a qual to check nor a projection to do, just skip
-	 * all the overhead and return the raw scan tuple.
-	 */
-	if (!qual && !projInfo)
-		return (*accessMtd) (node);
+    /*
+     * If we have neither a qual to check nor a projection to do, just skip
+     * all the overhead and return the raw scan tuple.
+     */
+    if (!qual && !projInfo)
+        return (*accessMtd) (node);
 
-	/*
-	 * Reset per-tuple memory context to free any expression evaluation
-	 * storage allocated in the previous tuple cycle.
-	 */
-	econtext = node->ps.ps_ExprContext;
-	ResetExprContext(econtext);
+    /*
+     * Reset per-tuple memory context to free any expression evaluation
+     * storage allocated in the previous tuple cycle.
+     */
+    econtext = node->ps.ps_ExprContext;
+    ResetExprContext(econtext);
 
-	/*
-	 * get a tuple from the access method loop until we obtain a tuple which
-	 * passes the qualification.
-	 */
-	for (;;)
-	{
-		TupleTableSlot *slot;
+    /*
+     * get a tuple from the access method loop until we obtain a tuple which
+     * passes the qualification.
+     */
+    for (;;)
+    {
+        TupleTableSlot *slot;
 
-		CHECK_FOR_INTERRUPTS();
+        CHECK_FOR_INTERRUPTS();
 
-		slot = (*accessMtd) (node);
+        slot = (*accessMtd) (node);
 
-		/*
-		 * if the slot returned by the accessMtd contains NULL, then it means
-		 * there is nothing more to scan so we just return an empty slot,
-		 * being careful to use the projection result slot so it has correct
-		 * tupleDesc.
-		 */
-		if (TupIsNull(slot))
-		{
-			if (projInfo)
-				return ExecClearTuple(projInfo->pi_slot);
-			else
-				return slot;
-		}
+        /*
+         * if the slot returned by the accessMtd contains NULL, then it means
+         * there is nothing more to scan so we just return an empty slot,
+         * being careful to use the projection result slot so it has correct
+         * tupleDesc.
+         */
+        if (TupIsNull(slot))
+        {
+            if (projInfo)
+                return ExecClearTuple(projInfo->pi_slot);
+            else
+                return slot;
+        }
 
-		/*
-		 * place the current tuple into the expr context
-		 */
-		econtext->ecxt_scantuple = slot;
+        /*
+         * place the current tuple into the expr context
+         */
+        econtext->ecxt_scantuple = slot;
 
-		/*
-		 * check that the current tuple satisfies the qual-clause
-		 *
-		 * check for non-nil qual here to avoid a function call to ExecQual()
-		 * when the qual is nil ... saves only a few cycles, but they add up
-		 * ...
-		 */
-		if (!qual || ExecQual(qual, econtext, false))
-		{
-			/*
-			 * Found a satisfactory scan tuple.
-			 */
-			if (projInfo)
-			{
-				/*
-				 * Form a projection tuple, store it in the result tuple slot
-				 * and return it.
-				 */
-				return ExecProject(projInfo, NULL);
-			}
-			else
-			{
-				/*
-				 * Here, we aren't projecting, so just return scan tuple.
-				 */
-				return slot;
-			}
-		}
+        /*
+         * check that the current tuple satisfies the qual-clause
+         *
+         * check for non-nil qual here to avoid a function call to ExecQual()
+         * when the qual is nil ... saves only a few cycles, but they add up
+         * ...
+         */
+        if (!qual || ExecQual(qual, econtext, false))
+        {
+            /*
+             * Found a satisfactory scan tuple.
+             */
+            if (projInfo)
+            {
+                /*
+                 * Form a projection tuple, store it in the result tuple slot
+                 * and return it.
+                 */
+                ((TupleBatch)projInfo->pi_slot->PRIVATE_tb)->nrows = ((TupleBatch)slot->PRIVATE_tb)->nrows;
+                memcpy(((TupleBatch)projInfo->pi_slot->PRIVATE_tb)->skip,
+                       ((TupleBatch)slot->PRIVATE_tb)->skip,sizeof(bool) * ((TupleBatch)slot->PRIVATE_tb)->nrows);
+                return ExecVProject(projInfo, NULL);
+            }
+            else
+            {
+                /*
+                 * Here, we aren't projecting, so just return scan tuple.
+                 */
+                return slot;
+            }
+        }
 
-		/*
-		 * Tuple fails qual, so free per-tuple memory and try again.
-		 */
-		ResetExprContext(econtext);
-	}
+        /*
+         * Tuple fails qual, so free per-tuple memory and try again.
+         */
+        ResetExprContext(econtext);
+        tbReset(node->ss_ScanTupleSlot->PRIVATE_tb);
+        tbReset(node->ps.ps_ResultTupleSlot->PRIVATE_tb);
+    }
 }

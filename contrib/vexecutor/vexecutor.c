@@ -192,7 +192,7 @@ static TupleTableSlot* VExecProcNode(PlanState *node)
 #endif
         case T_AppendOnlyScanState:
         case T_TableScanState:
-            result = ExecTableVScan((ScanState*)node);
+			result = ExecTableVScanVirtualLayer((ScanState*)node);
             break;
         default:
             break;
