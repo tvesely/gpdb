@@ -1983,6 +1983,10 @@ InitPlan(QueryDesc *queryDesc, int eflags)
 
 			Plan	   *subplan = (Plan *) lfirst(l);
 			subplanstate = ExecInitNode(subplan, estate, sp_eflags);
+			/* to process the planstate */
+			if(vmthd.vectorized_executor_enable &&
+			   NULL != vmthd.ExecVecNode_Hook)
+				subplanstate = vmthd.ExecVecNode_Hook(subplanstate, NULL, estate, eflags);
 		}
 
 		estate->es_subplanstates = lappend(estate->es_subplanstates, subplanstate);
@@ -2002,6 +2006,11 @@ InitPlan(QueryDesc *queryDesc, int eflags)
 	 * processing tuples.
 	 */
 	planstate = ExecInitNode(start_plan_node, estate, eflags);
+
+	/* to process the planstate */
+	if(vmthd.vectorized_executor_enable &&
+		NULL != vmthd.ExecVecNode_Hook)
+		planstate = vmthd.ExecVecNode_Hook(planstate, NULL, estate, eflags);
 
 	queryDesc->planstate = planstate;
 

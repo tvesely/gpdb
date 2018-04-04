@@ -26,7 +26,10 @@
 #include "executor/nodeTableScan.h"
 #include "cdb/cdbvars.h"
 #include "utils/syscache.h"
+#include "utils/memaccounting.h"
 #include "execVScan.h"
+#include "execVQual.h"
+#include "vexecutor.h"
 
 PG_MODULE_MAGIC;
 int BATCHSIZE = 1024;
@@ -35,10 +38,10 @@ static int MAXBATCHSIZE = 4096;
 /*
  * hook function
  */
-static PlanState* VExecInitNode(PlanState *node,EState *eState,int eflags,MemoryAccountIdType ptr);
+static PlanState* VExecInitNode(Plan *node,EState *eState,int eflags);
+static PlanState* VExecVecNode(PlanState *Node, PlanState *parentNode, EState *eState,int eflags);
 static TupleTableSlot* VExecProcNode(PlanState *node);
 static bool VExecEndNode(PlanState *node);
-static Oid GetNType(Oid vtype);
 extern int currentSliceId;
 
 /*
@@ -51,7 +54,9 @@ _PG_init(void)
 {
 	elog(DEBUG3, "PG INIT VEXECTOR");
 	vmthd.CheckPlanVectorized_Hook = CheckAndReplacePlanVectorized;
+	vmthd.ExecInitExpr_Hook = VExecInitExpr;
 	vmthd.ExecInitNode_Hook = VExecInitNode;
+	vmthd.ExecVecNode_Hook = VExecVecNode;
 	vmthd.ExecProcNode_Hook = VExecProcNode;
 	vmthd.ExecEndNode_Hook = VExecEndNode;
 	vmthd.GetNType = GetNType;
@@ -84,7 +89,9 @@ _PG_fini(void)
 {
 	elog(DEBUG3, "PG FINI VEXECTOR");
 	vmthd.CheckPlanVectorized_Hook = NULL;
+	vmthd.ExecInitExpr_Hook = NULL;
 	vmthd.ExecInitNode_Hook = NULL;
+	vmthd.ExecVecNode_Hook = NULL;
 	vmthd.ExecProcNode_Hook = NULL;
 	vmthd.ExecEndNode_Hook = NULL;
 }
@@ -122,11 +129,24 @@ static void backportTupleDescriptor(PlanState* ps,TupleDesc td)
 	ExecAssignResultType(ps,td);
 }
 
-static PlanState* VExecInitNode(PlanState *node,EState *eState,int eflags,
-                                MemoryAccountIdType curMemoryAccountId)
+static PlanState* VExecInitNode(Plan *node,EState *eState,int eflags)
+{
+	elog(DEBUG3, "PG VEXECINIT NODE");
+
+	return NULL;
+}
+
+#define HAS_EXECUTOR_MEMORY_ACCOUNT(planNode, NodeType) \
+	(NULL != planNode->memoryAccountId && \
+	MEMORY_OWNER_TYPE_Exec_##NodeType == planNode->memoryAccountId->ownerType)
+
+/*
+ * when vectorized_executor_enable is ON, we have to process the plan.
+ */
+static PlanState*
+VExecVecNode(PlanState *node, PlanState *parentNode, EState *eState,int eflags)
 {
 	Plan *plan = node->plan;
-	PlanState *subState = NULL;
 	VectorizedState *vstate = (VectorizedState*)palloc0(sizeof(VectorizedState));
 
 	elog(DEBUG3, "PG VEXECINIT NODE");
@@ -138,22 +158,7 @@ static PlanState* VExecInitNode(PlanState *node,EState *eState,int eflags,
 	node->vectorized = (void*)vstate;
 
 	vstate->vectorized = plan->vectorized;
-
-	/* set the parent state of son */
-	if(innerPlanState(node))
-	{
-		subState = innerPlanState(node);
-		Assert(NULL != subState);
-
-		((VectorizedState*)(subState->vectorized))->parent = node;
-	}
-	if(outerPlanState(node))
-	{
-		subState = outerPlanState(node);
-		Assert(NULL != subState);
-
-		((VectorizedState*)(subState->vectorized))->parent = node;
-	}
+	vstate->parent = parentNode;
 
 	if(Gp_role != GP_ROLE_DISPATCH)
 	{
@@ -164,15 +169,21 @@ static PlanState* VExecInitNode(PlanState *node,EState *eState,int eflags,
 			case T_ParquetScan:
 #endif
 			case T_TableScanState:
-				START_MEMORY_ACCOUNT(curMemoryAccountId);
-					{
-						TupleDesc td = ((TableScanState *)node)->ss.ss_ScanTupleSlot->tts_tupleDescriptor;
-						((TableScanState *)node)->ss.ss_ScanTupleSlot->PRIVATE_tb = PointerGetDatum(tbGenerate(td->natts,BATCHSIZE));
-						node->ps_ResultTupleSlot->PRIVATE_tb = PointerGetDatum(tbGenerate(td->natts,BATCHSIZE));
-						/* if V->N */
-						backportTupleDescriptor(node,node->ps_ResultTupleSlot->tts_tupleDescriptor);
-					}
-						END_MEMORY_ACCOUNT();
+//				if(HAS_EXECUTOR_MEMORY_ACCOUNT(plan, TableScan))
+					START_MEMORY_ACCOUNT(plan->memoryAccountId);
+
+				TupleDesc td = ((TableScanState *)node)->ss.ss_ScanTupleSlot->tts_tupleDescriptor;
+				((TableScanState *)node)->ss.ss_ScanTupleSlot->PRIVATE_tb = PointerGetDatum(tbGenerate(td->natts,BATCHSIZE));
+				node->ps_ResultTupleSlot->PRIVATE_tb = PointerGetDatum(tbGenerate(td->natts,BATCHSIZE));
+
+				/* if V->N */
+				if( NULL == parentNode ||
+					NULL == parentNode->vectorized ||
+					!((VectorizedState *)parentNode->vectorized)->vectorized)
+					backportTupleDescriptor(node,node->ps_ResultTupleSlot->tts_tupleDescriptor);
+
+//				if(HAS_EXECUTOR_MEMORY_ACCOUNT(plan, TableScan))
+					END_MEMORY_ACCOUNT();
 				break;
 			default:
 				((VectorizedState *)node->vectorized)->vectorized = false;
@@ -180,8 +191,15 @@ static PlanState* VExecInitNode(PlanState *node,EState *eState,int eflags,
 		}
 	}
 
+	/* recursively */
+	if(NULL != node->lefttree)
+		VExecVecNode(node->lefttree, node, eState, eflags);
+	if(NULL != node->righttree)
+		VExecVecNode(node->righttree, node, eState, eflags);
+
 	return node;
 }
+
 static TupleTableSlot* VExecProcNode(PlanState *node)
 {
     TupleTableSlot* result = NULL;
@@ -249,7 +267,7 @@ HasVecExecOprator(NodeTag tag)
 	return result;
 }
 
-static Oid GetNType(Oid vtype)
+Oid GetNType(Oid vtype)
 {
 	const vFuncMap* vf = GetVFunc(vtype);
 	return vf == NULL ? InvalidOid : vf->ntype;

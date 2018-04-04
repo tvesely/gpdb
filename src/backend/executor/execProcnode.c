@@ -326,6 +326,18 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 		}
 	}
 
+
+	/*
+    * If the plan node can be vectorized and vectorized is enable, enter the
+    * vectorized execution operators.
+    */
+	if(vmthd.vectorized_executor_enable
+	   && vmthd.ExecInitNode_Hook
+	   && node->vectorized
+	   && (result = vmthd.ExecInitNode_Hook(node,estate,eflags)))
+		return result;
+
+
 	switch (nodeTag(node))
 	{
 			/*
@@ -908,7 +920,7 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 		*/
 		if(vmthd.vectorized_executor_enable
 		   && vmthd.ExecInitNode_Hook)
-			result = vmthd.ExecInitNode_Hook(result,estate,eflags,curMemoryAccountId);
+			result = vmthd.ExecInitNode_Hook(result,estate,curMemoryAccountId);
 
 	}
 
