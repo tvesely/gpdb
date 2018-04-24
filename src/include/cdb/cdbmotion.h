@@ -153,4 +153,5 @@ extern void UpdateMotionExpectedReceivers(MotionLayerState *mlStates,
  */
 extern TupleChunkListItem get_eos_tuplechunklist(void);
 
+extern void statSendTuple(MotionLayerState *mlStates, MotionNodeEntry * pMNEntry, TupleChunkList tcList);
 #endif   /* CDBMOTION_H */

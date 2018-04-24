@@ -344,9 +344,7 @@ Oid GetVtype(Oid ntype)
  */
 Oid GetNtype(Oid vtype){
 	HeapTuple tuple;
-	bool isNull = true;
 	VecTypeHashEntry *entry = NULL;
-	Oid ntype;
 	bool found = false;
 	Form_pg_type pt;
 

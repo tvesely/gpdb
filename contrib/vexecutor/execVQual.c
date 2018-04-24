@@ -19,6 +19,7 @@
 #include "postgres.h"
 #include "utils/builtins.h"
 #include "execVQual.h"
+#include "cdb/cdbhash.h"
 static bool
 ExecVTargetList(List *targetlist,
 			   ExprContext *econtext,
@@ -105,7 +106,7 @@ ExecVProject(ProjectionInfo *projInfo, ExprDoneCond *isDone)
  *      This function will be invoked in V->N process.
  */
 bool
-VirtualNodeProc(ScanState* state,TupleTableSlot *slot){
+VirtualNodeProc(TupleTableSlot *slot){
     if(TupIsNull(slot) )
         return false;
 
@@ -393,7 +394,7 @@ VExecEvalOr(BoolExprState *orExpr, ExprContext *econtext,
 
 		if(NULL == res)
 		{
-			res = DatumGetPointer(clause_value);
+			res = (vbool*) DatumGetPointer(clause_value);
 			Assert(NULL != res->isnull);
 			for(i = 0; i < res->dim; i++)
 			{
@@ -407,7 +408,7 @@ VExecEvalOr(BoolExprState *orExpr, ExprContext *econtext,
 		}
 		else
 		{
-			next = DatumGetPointer(clause_value);
+			next = (vbool*) DatumGetPointer(clause_value);
 			Assert(NULL != res->isnull && NULL != next->isnull);
 			for(i = 0; i < res->dim; i++)
 			{
@@ -467,7 +468,7 @@ VExecEvalAndInternal(List* clauses, ExprContext *econtext,
 
 		if(NULL == res)
 		{
-			res = DatumGetPointer(clause_value);
+			res = (vbool*) DatumGetPointer(clause_value);
 			Assert(NULL != res->isnull);
 			for(i = 0; i < res->dim; i++)
 			{
@@ -480,7 +481,7 @@ VExecEvalAndInternal(List* clauses, ExprContext *econtext,
 		}
 		else
 		{
-			next = DatumGetPointer(clause_value);
+			next = (vbool*) DatumGetPointer(clause_value);
 			Assert(NULL != res->isnull && NULL != next->isnull);
 			for(i = 0; i < res->dim; i++)
 			{

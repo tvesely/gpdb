@@ -119,7 +119,6 @@ static int
 CdbMergeComparator(void *lhs, void *rhs, void *context);
 static uint32 evalHashKey(ExprContext *econtext, List *hashkeys, List *hashtypes, CdbHash * h);
 
-static void doSendEndOfStream(Motion * motion, MotionState * node);
 static void doSendTuple(Motion * motion, MotionState * node, TupleTableSlot *outerTupleSlot);
 
 
@@ -1356,7 +1355,7 @@ evalHashKey(ExprContext *econtext, List *hashkeys, List *hashtypes, CdbHash * h)
 	 * to assign a hash value for us.
 	 */
 	if (list_length(hashkeys) > 0)
-	{	
+	{
 		forboth(hk, hashkeys, ht, hashtypes)
 		{
 			ExprState  *keyexpr = (ExprState *) lfirst(hk);

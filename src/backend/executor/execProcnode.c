@@ -1017,9 +1017,8 @@ ExecProcNode(PlanState *node)
 	}
 
 	if(vmthd.vectorized_executor_enable
-	   && node->vectorized
 	   && vmthd.ExecProcNode_Hook
-	   && (result = vmthd.ExecProcNode_Hook(node)))
+	   && vmthd.ExecProcNode_Hook(node,&result))
 		goto Exec_Jmp_Done;
 
 	switch (nodeTag(node))

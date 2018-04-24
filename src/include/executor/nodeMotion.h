@@ -15,6 +15,7 @@
 #ifndef NODEMOTION_H
 #define NODEMOTION_H
 
+#include "cdb/cdbhash.h"
 #include "nodes/execnodes.h"
 
 extern MotionState *ExecInitMotion(Motion *node, EState *estate, int eflags);
@@ -25,5 +26,7 @@ extern void ExecReScanMotion(MotionState *node);
 extern void ExecStopMotion(MotionState *node);
 
 extern bool isMotionGather(const Motion *m);
+extern void doSendEndOfStream(Motion * motion, MotionState * node);
+
 
 #endif   /* NODEMOTION_H */

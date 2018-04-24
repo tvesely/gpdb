@@ -137,8 +137,8 @@ v##type1##v##type2##opstr(PG_FUNCTION_ARGS) \
 { \
     int size = 0; \
     int i = 0; \
-    v##type1 *arg1 = PG_GETARG_POINTER(0); \
-    v##type2 *arg2 = PG_GETARG_POINTER(1); \
+    v##type1 *arg1 = (v##type1*) PG_GETARG_POINTER(0); \
+    v##type2 *arg2 = (v##type2*) PG_GETARG_POINTER(1); \
     v##type1 *res = buildv##type1(BATCHSIZE, NULL); \
     Assert(arg1->dim == arg2->dim); \
     size = arg1->dim; \
@@ -165,7 +165,7 @@ v##type##const_type##opstr(PG_FUNCTION_ARGS) \
 { \
     int size = 0; \
     int i = 0; \
-    v##type *arg1 = PG_GETARG_POINTER(0); \
+    v##type *arg1 = (v##type*) PG_GETARG_POINTER(0); \
     const_type arg2 = CONST_ARG_MACRO(1); \
     v##type *res = buildv##type(BATCHSIZE, NULL); \
     size = arg1->dim;\
@@ -192,8 +192,8 @@ v##type1##v##type2##cmpstr(PG_FUNCTION_ARGS) \
 { \
     int size = 0; \
     int i = 0; \
-    v##type1 *arg1 = PG_GETARG_POINTER(0); \
-    v##type2 *arg2 = PG_GETARG_POINTER(1); \
+    v##type1 *arg1 = (v##type1*) PG_GETARG_POINTER(0); \
+    v##type2 *arg2 = (v##type2*) PG_GETARG_POINTER(1); \
     Assert(arg1->dim == arg2->dim); \
     vbool *res = buildvtype(BOOLOID, BATCHSIZE, NULL); \
     size = arg1->dim; \
@@ -220,7 +220,7 @@ v##type##const_type##cmpstr(PG_FUNCTION_ARGS) \
 { \
     int size = 0; \
     int i = 0; \
-    v##type *arg1 = PG_GETARG_POINTER(0); \
+    v##type *arg1 = (v##type*) PG_GETARG_POINTER(0); \
     const_type arg2 = CONST_ARG_MACRO(1); \
     vbool *res = buildvtype(BOOLOID, BATCHSIZE, NULL); \
     size = arg1->dim; \
