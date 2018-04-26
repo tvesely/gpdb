@@ -59,7 +59,7 @@ _PG_init(void)
 	vmthd.ExecVecNode_Hook = VExecVecNode;
 	vmthd.ExecProcNode_Hook = VExecProcNode;
 	vmthd.ExecEndNode_Hook = VExecEndNode;
-	vmthd.GetNType = GetNType;
+	vmthd.GetNType = GetNtype;
 	DefineCustomBoolVariable("vectorized_executor_enable",
 	                         gettext_noop("enable vectorized executor"),
 	                         NULL,
@@ -109,7 +109,7 @@ static void backportTupleDescriptor(PlanState* ps,TupleDesc td)
 	Form_pg_type  typeForm;
 	for(int i = 0;i < td->natts; ++i)
 	{
-		oidtypeid = GetVFunc(td->attrs[i]->atttypid)->ntype;
+		oidtypeid = GetNtype(td->attrs[i]->atttypid);
 
 		tuple = SearchSysCache1(TYPEOID, ObjectIdGetDatum(oidtypeid));
 
@@ -271,8 +271,3 @@ HasVecExecOprator(NodeTag tag)
 	return result;
 }
 
-Oid GetNType(Oid vtype)
-{
-	const vFuncMap* vf = GetVFunc(vtype);
-	return vf == NULL ? InvalidOid : vf->ntype;
-}

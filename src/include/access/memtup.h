@@ -102,6 +102,13 @@ static inline uint32 memtuple_get_size(MemTuple mtup)
 	Assert(memtuple_lead_bit_set(mtup));
 	return (mtup->PRIVATE_mt_len & MEMTUP_LEN_MASK);
 }
+static inline void memtuple_set_size(MemTuple mtup, MemTupleBinding *pbind, uint32 len)
+{
+        UnusedArg(pbind);
+        Assert((len & (~MEMTUP_LEN_MASK)) == 0);
+        mtup->PRIVATE_mt_len |= MEMTUP_LEAD_BIT;
+        mtup->PRIVATE_mt_len = (mtup->PRIVATE_mt_len & (~MEMTUP_LEN_MASK)) | len;
+}
 static inline void memtuple_set_mtlen(MemTuple mtup, uint32 mtlen)
 {
 	Assert((mtlen & MEMTUP_LEAD_BIT) != 0);
