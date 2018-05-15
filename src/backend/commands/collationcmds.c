@@ -19,6 +19,7 @@
 #include "catalog/dependency.h"
 #include "catalog/indexing.h"
 #include "catalog/namespace.h"
+#include "catalog/oid_dispatch.h"
 #include "catalog/pg_collation.h"
 #include "catalog/pg_collation_fn.h"
 #include "commands/alter.h"
@@ -32,6 +33,9 @@
 #include "utils/lsyscache.h"
 #include "utils/pg_locale.h"
 #include "utils/syscache.h"
+
+#include "cdb/cdbvars.h"
+#include "cdb/cdbdisp_query.h"
 
 static void AlterCollationOwner_internal(Relation rel, Oid collationOid,
 							 Oid newOwnerId);
@@ -146,6 +150,23 @@ DefineCollation(List *names, List *parameters)
 	/* check that the locales can be loaded */
 	CommandCounterIncrement();
 	(void) pg_newlocale_from_collation(newoid);
+
+	if (Gp_role == GP_ROLE_DISPATCH)
+	{
+		DefineStmt * stmt = makeNode(DefineStmt);
+		stmt->kind = OBJECT_COLLATION;
+		stmt->oldstyle = false;
+		stmt->defnames = names;
+		stmt->args = NIL;
+		stmt->definition = parameters;
+		stmt->trusted = false;
+		CdbDispatchUtilityStatement((Node *) stmt,
+		                            DF_CANCEL_ON_ERROR|
+			                        DF_WITH_SNAPSHOT|
+			                        DF_NEED_TWO_PHASE,
+		                            GetAssignedOidsForDispatch(),
+		                            NULL);
+	}
 }
 
 /*
