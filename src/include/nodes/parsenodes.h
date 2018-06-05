@@ -1725,6 +1725,8 @@ typedef struct CreateExternalStmt
 	bool		iswritable;
 	Node	   *sreh;			/* Single row error handling info */
 	List       *extOptions;		/* generic options to external table */
+	List	   *encoding;		/* List (size 1 max) of DefElem nodes for
+								   data encoding */
 	Node       *distributedBy;   /* what columns we distribute the data by */
 	struct GpPolicy  *policy;	/* used for writable tables */
 

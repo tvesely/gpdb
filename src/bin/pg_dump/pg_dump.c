@@ -12368,7 +12368,7 @@ dumpExternal(TableInfo *tbinfo, PQExpBuffer query, PQExpBuffer q, PQExpBuffer de
 					"SELECT x.urilocation, x.execlocation, x.fmttype, x.fmtopts, x.command, "
 						   "x.rejectlimit, x.rejectlimittype, "
 						   "CASE WHEN x.logerrors THEN true ELSE null END AS logerrors, "
-						   "pg_catalog.get_exttable_encoding(x.reloid), "
+						   "pg_catalog.pg_encoding_to_char(x.encoding), "
 						   "x.writable, "
 						   "array_to_string(ARRAY( "
 						   "SELECT pg_catalog.quote_ident(option_name) || ' ' || "

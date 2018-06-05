@@ -1369,6 +1369,7 @@ _equalCreateExternalStmt(CreateExternalStmt *a, CreateExternalStmt *b)
 	COMPARE_SCALAR_FIELD(iswritable);
 	COMPARE_NODE_FIELD(sreh);
 	COMPARE_NODE_FIELD(extOptions);
+	COMPARE_NODE_FIELD(encoding);
 	COMPARE_NODE_FIELD(distributedBy);
 
 	return true;

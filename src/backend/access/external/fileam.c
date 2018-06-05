@@ -87,6 +87,8 @@ static int	external_getdata_callback(void *outbuf, int datasize, void *extra);
 static int	external_getdata(URL_FILE *extfile, CopyState pstate, void *outbuf, int maxread);
 static void external_senddata(URL_FILE *extfile, CopyState pstate);
 static void external_scan_error_callback(void *arg);
+static List *parseCopyFormatString(char *fmtstr, char fmttype);
+static DefElem *makeEncodingDefelm(int encoding);
 static void parseCustomFormatString(char *fmtstr, char **formatter_name, List **formatter_params);
 static Oid lookupCustomFormatter(char *formatter_name, bool iswritable);
 static void justifyDatabuf(StringInfo buf);
@@ -123,7 +125,7 @@ elog(DEBUG2, "external_getnext returning tuple")
 FileScanDesc
 external_beginscan(Relation relation, uint32 scancounter,
 			   List *uriList, char *fmtOptString, char fmtType, bool isMasterOnly,
-			  int rejLimit, bool rejLimitInRows, bool logErrors)
+			  int rejLimit, bool rejLimitInRows, bool logErrors, int encoding)
 {
 	FileScanDesc scan;
 	TupleDesc	tupDesc = NULL;
@@ -281,6 +283,9 @@ external_beginscan(Relation relation, uint32 scancounter,
 	}
 	else
 		copyFmtOpts = parseCopyFormatString(fmtOptString, fmtType);
+
+	/* Copy expects the encoding to be added to the copyFmtOpts list */
+	copyFmtOpts = lappend(copyFmtOpts, makeEncodingDefelm(encoding));
 
 	/*
 	 * Allocate and init our structure that keeps track of data parsing state
@@ -1915,7 +1920,7 @@ strtokx2(const char *s,
 	return start;
 }
 
-List *
+static List *
 parseCopyFormatString(char *fmtstr, char fmttype)
 {
 	char	   *token;
@@ -2065,15 +2070,6 @@ parseCopyFormatString(char *fmtstr, char fmttype)
 				 "external table internal parser will not use formatter %s",
 				 token);
 		}
-		else if (pg_strcasecmp(token, "encoding") == 0)
-		{
-			token = strtokx2(NULL, whitespace, NULL, "'",
-			                 nonstd_backslash, true, true, encoding);
-			if (!token)
-				goto error;
-
-			item = makeDefElem("encoding", (Node *) makeString(pstrdup(token)));
-		}
 		else
 			goto error;
 
@@ -2108,6 +2104,21 @@ error:
 		ereport(ERROR, (errcode(ERRCODE_INTERNAL_ERROR),
 					  errmsg("external table internal parse error at end of "
 							 "line")));
+}
+
+static DefElem*
+makeEncodingDefelm(int encoding)
+{
+	const char *encoding_name;
+
+	encoding_name = pg_encoding_to_char(encoding);
+	if (strcmp(encoding_name, "") == 0 ||
+		pg_valid_client_encoding(encoding_name) < 0)
+		ereport(ERROR,
+		        (errcode(ERRCODE_UNDEFINED_OBJECT),
+			        errmsg("%d is not a valid encoding code",
+			               encoding)));
+	return makeDefElem("encoding", (Node *) makeString(encoding_name));
 }
 
 static void

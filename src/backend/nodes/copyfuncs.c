@@ -3687,6 +3687,7 @@ _copyCreateExternalStmt(CreateExternalStmt *from)
 	COPY_SCALAR_FIELD(iswritable);
 	COPY_NODE_FIELD(sreh);
 	COPY_NODE_FIELD(extOptions);
+	COPY_NODE_FIELD(encoding);
 	COPY_NODE_FIELD(distributedBy);
 	if (from->policy)
 	{

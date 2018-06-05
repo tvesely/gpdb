@@ -326,37 +326,24 @@ DefineExternalRelation(CreateExternalStmt *createExtStmt)
 	/*
 	 * Parse external table data encoding
 	 */
-	foreach(option, createExtStmt->formatOpts)
+	foreach(option, createExtStmt->encoding)
 	{
 		DefElem    *defel = (DefElem *) lfirst(option);
 
-		if(strcmp(defel->defname, "encoding") == 0)
-		{
-			if (dencoding)
-				ereport(ERROR,
-				        (errcode(ERRCODE_SYNTAX_ERROR),
-					        errmsg(
-						        "conflicting or redundant ENCODING specification")));
-			dencoding = defel;
-		}
+		Assert(strcmp(defel->defname, "encoding") == 0);
+
+		if (dencoding)
+			ereport(ERROR,
+					(errcode(ERRCODE_SYNTAX_ERROR),
+				 errmsg("conflicting or redundant ENCODING specification")));
+		dencoding = defel;
 	}
 
 	if (dencoding && dencoding->arg)
 	{
 		const char *encoding_name;
 
-		if (IsA(dencoding->arg, Integer))
-		{
-			encoding = intVal(dencoding->arg);
-			encoding_name = pg_encoding_to_char(encoding);
-			if (strcmp(encoding_name, "") == 0 ||
-				pg_valid_client_encoding(encoding_name) < 0)
-				ereport(ERROR,
-						(errcode(ERRCODE_UNDEFINED_OBJECT),
-						 errmsg("%d is not a valid encoding code",
-								encoding)));
-		}
-		else if (IsA(dencoding->arg, String))
+		if (IsA(dencoding->arg, String))
 		{
 			encoding_name = strVal(dencoding->arg);
 			if (pg_valid_client_encoding(encoding_name) < 0)
@@ -364,11 +351,16 @@ DefineExternalRelation(CreateExternalStmt *createExtStmt)
 						(errcode(ERRCODE_UNDEFINED_OBJECT),
 						 errmsg("%s is not a valid encoding name",
 								encoding_name)));
+			encoding = pg_char_to_encoding(encoding_name);
 		}
 		else
 			elog(ERROR, "unrecognized node type: %d",
 				 nodeTag(dencoding->arg));
 	}
+
+	/* If encoding is defaulted, use database encoding */
+	if (encoding < 0)
+		encoding = pg_get_client_encoding();
 
 	/*
 	 * If the number of locations (file or http URIs) exceed the number of
@@ -432,6 +424,7 @@ DefineExternalRelation(CreateExternalStmt *createExtStmt)
 						commandString,
 						rejectlimit,
 						logerrors,
+						encoding,
 						formatOptStr,
 						optionsStr,
 						locationExec,
@@ -857,8 +850,6 @@ transformFormatOpts(char formattype, List *formatOpts, int numcols, bool iswrita
 		appendStringInfo(&cfbuf, "delimiter '%s'", cstate->delim);
 		appendStringInfo(&cfbuf, " null '%s'", cstate->null_print);
 		appendStringInfo(&cfbuf, " escape '%s'", cstate->escape);
-		if(cstate->file_encoding >= 0)
-			appendStringInfo(&cfbuf, " encoding '%s'", pg_encoding_to_char(cstate->file_encoding));
 		if (fmttype_is_csv(formattype))
 			appendStringInfo(&cfbuf, " quote '%s'", cstate->quote);
 		if (cstate->header_line)
