@@ -535,3 +535,6 @@
  CREATE FUNCTION complex_lte(complex, complex) RETURNS bool  LANGUAGE internal IMMUTABLE STRICT AS 'complex_lte' WITH (OID=3595);
  
  CREATE FUNCTION complex_gte(complex, complex) RETURNS bool  LANGUAGE internal IMMUTABLE STRICT AS 'complex_gte' WITH (OID=7596);
+
+ -- External table related functions
+ CREATE FUNCTION get_exttable_encoding(oid) RETURNS name LANGUAGE internal STABLE STRICT AS 'get_exttable_encoding' WITH (OID=3813, DESCRIPTION="print external table encoding");

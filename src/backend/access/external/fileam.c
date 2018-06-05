@@ -68,7 +68,7 @@ static void InitParseState(CopyState pstate, Relation relation,
 			   bool writable,
 			   char fmtType,
 			   char *uri, int rejectlimit,
-			   bool islimitinrows, bool logerrors, int encoding);
+			   bool islimitinrows, bool logerrors);
 
 static void FunctionCallPrepareFormatter(FunctionCallInfoData *fcinfo,
 							 int nArgs,
@@ -87,7 +87,6 @@ static int	external_getdata_callback(void *outbuf, int datasize, void *extra);
 static int	external_getdata(URL_FILE *extfile, CopyState pstate, void *outbuf, int maxread);
 static void external_senddata(URL_FILE *extfile, CopyState pstate);
 static void external_scan_error_callback(void *arg);
-static List *parseCopyFormatString(char *fmtstr, char fmttype);
 static void parseCustomFormatString(char *fmtstr, char **formatter_name, List **formatter_params);
 static Oid lookupCustomFormatter(char *formatter_name, bool iswritable);
 static void justifyDatabuf(StringInfo buf);
@@ -124,7 +123,7 @@ elog(DEBUG2, "external_getnext returning tuple")
 FileScanDesc
 external_beginscan(Relation relation, uint32 scancounter,
 			   List *uriList, char *fmtOptString, char fmtType, bool isMasterOnly,
-			  int rejLimit, bool rejLimitInRows, bool logErrors, int encoding)
+			  int rejLimit, bool rejLimitInRows, bool logErrors)
 {
 	FileScanDesc scan;
 	TupleDesc	tupDesc = NULL;
@@ -295,7 +294,7 @@ external_beginscan(Relation relation, uint32 scancounter,
 
 	/* Initialize all the parsing and state variables */
 	InitParseState(scan->fs_pstate, relation, false, fmtType,
-				   scan->fs_uri, rejLimit, rejLimitInRows, logErrors, encoding);
+				   scan->fs_uri, rejLimit, rejLimitInRows, logErrors);
 
 	if (fmttype_is_custom(fmtType))
 	{
@@ -624,8 +623,7 @@ external_insert_init(Relation rel)
 				   extInsertDesc->ext_uri,
 				   extentry->rejectlimit,
 				   (extentry->rejectlimittype == 'r'),
-				   extentry->logerrors,
-				   extentry->encoding);
+				   extentry->logerrors);
 
 	if (fmttype_is_custom(extentry->fmtcode))
 	{
@@ -1213,7 +1211,7 @@ InitParseState(CopyState pstate, Relation relation,
 			   bool iswritable,
 			   char fmtType,
 			   char *uri, int rejectlimit,
-			   bool islimitinrows, bool logerrors, int encoding)
+			   bool islimitinrows, bool logerrors)
 {
 	/*
 	 * Error handling setup
@@ -1249,9 +1247,6 @@ InitParseState(CopyState pstate, Relation relation,
 
 		pstate->num_consec_csv_err = 0;
 	}
-
-	// GPDB_91_MERGE_FIXME: how do we get encoding to BeginCopyFrom?
-	//pstate->client_encoding = encoding;
 
 	/* Initialize 'out_functions', like CopyTo() would. */
 	CopyState cstate = pstate;
@@ -1920,7 +1915,7 @@ strtokx2(const char *s,
 	return start;
 }
 
-static List *
+List *
 parseCopyFormatString(char *fmtstr, char fmttype)
 {
 	char	   *token;
@@ -2069,6 +2064,15 @@ parseCopyFormatString(char *fmtstr, char fmttype)
 			elog(WARNING,
 				 "external table internal parser will not use formatter %s",
 				 token);
+		}
+		else if (pg_strcasecmp(token, "encoding") == 0)
+		{
+			token = strtokx2(NULL, whitespace, NULL, "'",
+			                 nonstd_backslash, true, true, encoding);
+			if (!token)
+				goto error;
+
+			item = makeDefElem("encoding", (Node *) makeString(pstrdup(token)));
 		}
 		else
 			goto error;

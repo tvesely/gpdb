@@ -2598,7 +2598,6 @@ _outCreateExternalStmt(StringInfo str, CreateExternalStmt *node)
 	WRITE_BOOL_FIELD(iswritable);
 	WRITE_NODE_FIELD(sreh);
 	WRITE_NODE_FIELD(extOptions);
-	WRITE_NODE_FIELD(encoding);
 	WRITE_NODE_FIELD(distributedBy);
 }
 

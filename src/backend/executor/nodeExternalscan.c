@@ -269,8 +269,7 @@ ExecInitExternalScan(ExternalScan *node, EState *estate, int eflags)
 									 node->isMasterOnly,
 									 node->rejLimit,
 									 node->rejLimitInRows,
-									 node->logErrors,
-									 node->encoding);
+									 node->logErrors);
 
 	externalstate->ss.ss_currentRelation = currentRelation;
 	externalstate->ess_ScanDesc = currentScanDesc;

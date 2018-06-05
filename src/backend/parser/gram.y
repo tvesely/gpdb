@@ -5054,6 +5054,8 @@ CreateExternalStmt:	CREATE OptWritable EXTERNAL OptWeb OptTemp TABLE qualified_n
 					ExtTypedesc FORMAT Sconst format_opt ext_options_opt ext_opt_encoding_list OptSingleRowErrorHandling OptDistributedBy
 						{
 							CreateExternalStmt *n = makeNode(CreateExternalStmt);
+							List *encoding = NIL;
+
 							n->iswritable = $2;
 							n->isweb = $4;
 							$7->relpersistence = $5;
@@ -5063,11 +5065,32 @@ CreateExternalStmt:	CREATE OptWritable EXTERNAL OptWeb OptTemp TABLE qualified_n
 							n->format = $13;
 							n->formatOpts = $14;
 							n->extOptions = $15;
-							n->encoding = $16;
+							encoding = $16;
 							n->sreh = $17;
 							n->distributedBy = $18;
 							n->policy = 0;
-							
+
+							ListCell *formatOpt;
+							bool has_encoding = false;
+							foreach(formatOpt, n->formatOpts)
+							{
+								DefElem *defel = (DefElem *) lfirst(formatOpt);
+
+								if(strcmp(defel->defname, "encoding") == 0)
+									has_encoding = true;
+							}
+
+							if(encoding != NIL)
+							{
+								if (has_encoding == true)
+									ereport(ERROR,
+											(errcode(ERRCODE_SYNTAX_ERROR),
+											 errmsg("ENCODING may not be specified both as a format option, and a keyword"),
+											 errhint("Remove encoding keyword, or format option")));
+
+								n->formatOpts= list_concat(n->formatOpts, encoding);
+							}
+
 							/* various syntax checks for EXECUTE external table */
 							if(((ExtTableTypeDesc *) n->exttypedesc)->exttabletype == EXTTBL_TYPE_EXECUTE)
 							{
@@ -5245,6 +5268,10 @@ format_opt_item:
 			| NEWLINE opt_as Sconst
 			{
 				$$ = makeDefElem("newline", (Node *)makeString($3));
+			}
+			| ENCODING opt_as Sconst
+			{
+				$$ = makeDefElem("encoding", (Node *)makeString($3));
 			}
 			;
 

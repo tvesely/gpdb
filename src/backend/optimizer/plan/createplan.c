@@ -133,8 +133,7 @@ static ExternalScan *make_externalscan(List *qptlist,
 				  bool ismasteronly,
 				  int rejectlimit,
 				  bool rejectlimitinrows,
-				  bool logerrors,
-				  int encoding);
+				  bool logerrors);
 static IndexScan *make_indexscan(List *qptlist, List *qpqual, Index scanrelid,
 			   Oid indexid, List *indexqual, List *indexqualorig,
 			   List *indexorderby, List *indexorderbyorig,
@@ -1443,8 +1442,7 @@ create_externalscan_plan(PlannerInfo *root, Path *best_path,
 								  ismasteronly,
 								  rejectlimit,
 								  islimitinrows,
-								  logerrors,
-								  ext->encoding);
+								  logerrors);
 
 	copy_path_costsize(root, &scan_plan->scan.plan, best_path);
 
@@ -4266,8 +4264,7 @@ make_externalscan(List *qptlist,
 				  bool ismasteronly,
 				  int rejectlimit,
 				  bool rejectlimitinrows,
-				  bool logerrors,
-				  int encoding)
+				  bool logerrors)
 {
 	ExternalScan *node = makeNode(ExternalScan);
 	Plan	   *plan = &node->scan.plan;
@@ -4288,7 +4285,6 @@ make_externalscan(List *qptlist,
 	node->rejLimit = rejectlimit;
 	node->rejLimitInRows = rejectlimitinrows;
 	node->logErrors = logerrors;
-	node->encoding = encoding;
 	node->scancounter = scancounter++;
 
 	return node;

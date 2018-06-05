@@ -1911,7 +1911,7 @@ describeOneTableDetails(const char *schemaname,
 			printfPQExpBuffer(&buf,
 							  "SELECT %s, x.fmttype, x.fmtopts, x.command, x.logerrors, "
 									 "x.rejectlimit, x.rejectlimittype, x.writable, "
-									  "pg_catalog.pg_encoding_to_char(x.encoding) "
+									  "pg_catalog.get_exttable_encoding(x.reloid) "
 									  "%s"
 							  "FROM pg_catalog.pg_exttable x, pg_catalog.pg_class c "
 							  "WHERE x.reloid = c.oid AND c.oid = '%s'\n", execLocations, optionsName, oid);

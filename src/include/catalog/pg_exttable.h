@@ -42,7 +42,6 @@ CATALOG(pg_exttable,6040) BKI_WITHOUT_OIDS
 	int4	rejectlimit;		/* error count reject limit per segment */
 	char	rejectlimittype;	/* 'r' (rows) or 'p' (percent) */
 	bool	logerrors;			/* 't' to log errors into file */
-	int4	encoding;			/* character encoding of this external table */
 	bool	writable;			/* 't' if writable, 'f' if readable */
 } FormData_pg_exttable;
 
@@ -61,7 +60,7 @@ typedef FormData_pg_exttable *Form_pg_exttable;
  *		compiler constants for pg_exttable
  * ----------------
  */
-#define Natts_pg_exttable					12
+#define Natts_pg_exttable					11
 #define Anum_pg_exttable_reloid				1
 #define Anum_pg_exttable_urilocation			2
 #define Anum_pg_exttable_execlocation			3
@@ -72,8 +71,7 @@ typedef FormData_pg_exttable *Form_pg_exttable;
 #define Anum_pg_exttable_rejectlimit		8
 #define Anum_pg_exttable_rejectlimittype	9
 #define Anum_pg_exttable_logerrors			10
-#define Anum_pg_exttable_encoding			11
-#define Anum_pg_exttable_writable			12
+#define Anum_pg_exttable_writable			11
 
 
 /*
@@ -91,7 +89,6 @@ typedef struct ExtTableEntry
 	int		rejectlimit;
 	char	rejectlimittype;
 	bool	logerrors;
-    int		encoding;
     bool	iswritable;
     bool	isweb;		/* extra state, not cataloged */
 } ExtTableEntry;
@@ -106,7 +103,6 @@ extern void InsertExtTableEntry(Oid 	tbloid,
 					char*	commandString,
 					int		rejectlimit,
 					bool	logerrors,
-					int		encoding,
 					Datum	formatOptStr,
 					Datum	optionsStr,
 					Datum	locationExec,

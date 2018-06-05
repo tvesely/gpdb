@@ -21,12 +21,14 @@
 #include "catalog/pg_extprotocol.h"
 #include "catalog/pg_type.h"
 #include "catalog/pg_proc.h"
+#include "access/fileam.h"
 #include "access/genam.h"
 #include "access/heapam.h"
 #include "access/reloptions.h"
 #include "catalog/dependency.h"
 #include "catalog/indexing.h"
 #include "mb/pg_wchar.h"
+#include "nodes/parsenodes.h"
 #include "utils/array.h"
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
@@ -36,6 +38,8 @@
 #include "utils/memutils.h"
 #include "utils/uri.h"
 #include "miscadmin.h"
+
+Datum		get_exttable_encoding(PG_FUNCTION_ARGS);
 
 /*
  * InsertExtTableEntry
@@ -54,7 +58,6 @@ InsertExtTableEntry(Oid 	tbloid,
 					char*	commandString,
 					int		rejectlimit,
 					bool    logerrors,
-					int		encoding,
 					Datum	formatOptStr,
 					Datum   optionsStr,
 					Datum	locationExec,
@@ -111,7 +114,6 @@ InsertExtTableEntry(Oid 	tbloid,
 	}
 
 	values[Anum_pg_exttable_logerrors - 1] = BoolGetDatum(logerrors);
-	values[Anum_pg_exttable_encoding - 1] = Int32GetDatum(encoding);
 	values[Anum_pg_exttable_writable - 1] = BoolGetDatum(iswritable);
 
 	pg_exttable_tuple = heap_form_tuple(RelationGetDescr(pg_exttable_rel), values, nulls);
@@ -210,7 +212,6 @@ GetExtTableEntryIfExists(Oid relid)
 				rejectlimit,
 				rejectlimittype,
 				logerrors,
-				encoding,
 				iswritable;
 	bool		isNull;
 	bool		locationNull = false;
@@ -397,17 +398,7 @@ GetExtTableEntryIfExists(Oid relid)
 	Insist(!isNull);
 	extentry->logerrors = DatumGetBool(logerrors);
 
-	/* get the table encoding */
-	encoding = heap_getattr(tuple,
-							Anum_pg_exttable_encoding,
-							RelationGetDescr(pg_exttable_rel),
-							&isNull);
 
-	Insist(!isNull);
-	extentry->encoding = DatumGetInt32(encoding);
-	Insist(PG_VALID_ENCODING(extentry->encoding));
-
-	/* get the table encoding */
 	iswritable = heap_getattr(tuple,
 							  Anum_pg_exttable_writable,
 							  RelationGetDescr(pg_exttable_rel),
@@ -468,4 +459,64 @@ RemoveExtTableEntry(Oid relid)
 	/* Finish up scan and close exttable catalog. */
 	systable_endscan(scan);
 	heap_close(pg_exttable_rel, NoLock);
+}
+
+
+Datum
+get_exttable_encoding(PG_FUNCTION_ARGS)
+{
+	Oid       tableoid = PG_GETARG_OID(0);
+	const char *encoding_name = NULL;
+	List *formatOpts = NIL;
+	int encoding = -1;
+	ListCell *formatOpt;
+
+	ExtTableEntry *exttbl = GetExtTableEntry(tableoid);
+
+	formatOpts = parseCopyFormatString(exttbl->fmtopts, exttbl->fmtcode);
+
+	foreach(formatOpt, formatOpts)
+	{
+		DefElem *defelem = lfirst(formatOpt);
+
+		Assert(IsA(defelem, DefElem));
+
+		if(strcmp(defelem->defname, "encoding") == 0)
+		{
+			if (IsA(defelem->arg, Integer))
+			{
+				encoding = intVal(defelem->arg);
+				encoding_name = pg_encoding_to_char(encoding);
+				if (strcmp(encoding_name, "") == 0 ||
+					pg_valid_client_encoding(encoding_name) < 0)
+					ereport(ERROR,
+					        (errcode(ERRCODE_UNDEFINED_OBJECT),
+						        errmsg("%d is not a valid encoding code",
+						               encoding)));
+			}
+			else if (IsA(defelem->arg, String))
+			{
+				encoding_name = strVal(defelem->arg);
+				encoding = pg_char_to_encoding(encoding_name);
+				if (pg_valid_client_encoding(encoding_name) < 0)
+					ereport(ERROR,
+					        (errcode(ERRCODE_UNDEFINED_OBJECT),
+						        errmsg("%s is not a valid encoding name",
+						               encoding_name)));
+			}
+			else
+				elog(ERROR, "unrecognized node type: %d",
+				     nodeTag(defelem->arg));
+
+		}
+	}
+
+	/*
+	 * As long as we don't have a client encoding explicitly in the fmtopts,
+	 * we assume that the extrnal table uses the client encoding.
+	 */
+	if(encoding <= 0)
+		encoding_name = pg_encoding_to_char(pg_get_client_encoding());
+
+	return DirectFunctionCall1(namein, CStringGetDatum(encoding_name));
 }
