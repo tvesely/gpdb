@@ -619,6 +619,9 @@ external_insert_init(Relation rel)
 	else
 		copyFmtOpts = parseCopyFormatString(extentry->fmtopts, extentry->fmtcode);
 
+	/* copy expects the encoding to be appended to the copyFmtOpts */
+	copyFmtOpts = lappend(copyFmtOpts, makeEncodingDefelm(extentry->encoding));
+
 	extInsertDesc->ext_pstate = BeginCopyToForExternalTable(rel,
 															copyFmtOpts);
 	InitParseState(extInsertDesc->ext_pstate,
