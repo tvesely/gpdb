@@ -135,7 +135,7 @@ CheckVectorizedExpression(Node *node, VectorizedContext *ctx)
 
 		//get the vectorized operator functions
 		//NOTE:we have no ParseState now, Give the NULL value is OK but not good...
-		tuple = oper(NULL, list_make1(NameStr(opname)),
+		tuple = oper(NULL, list_make1(makeString(NameStr(opname))),
 			ltype, rtype, false, -1);
 		if(NULL == tuple)
 			return true;
