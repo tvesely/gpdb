@@ -165,6 +165,7 @@ VExecVecNode(PlanState *node, PlanState *parentNode, EState *eState,int eflags)
 		switch (nodeTag(node) )
 		{
 			case T_AppendOnlyScan:
+			case T_AOCSScan:
 #if 0
 			case T_ParquetScan:
 #endif
@@ -208,6 +209,7 @@ static TupleTableSlot* VExecProcNode(PlanState *node)
 #if 0
         case T_ParquetScanState:
 #endif
+		case T_AOCSScanState:
         case T_AppendOnlyScanState:
         case T_TableScanState:
 			result = ExecTableVScanVirtualLayer((ScanState*)node);
@@ -228,6 +230,7 @@ static bool VExecEndNode(PlanState *node)
 	switch (nodeTag(node))
 	{
 		case T_AppendOnlyScanState:
+		case T_AOCSScanState:
 #if 0
 		case T_ParquetScanState:
 #endif
@@ -254,6 +257,7 @@ HasVecExecOprator(NodeTag tag)
 	switch(tag)
 	{
 	case T_AppendOnlyScan:
+		case T_AOCSScan:
 #if 0
 	case T_ParquetScan:
 #endif
