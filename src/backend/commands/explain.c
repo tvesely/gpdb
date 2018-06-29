@@ -1538,6 +1538,10 @@ ExplainNode(PlanState *planstate, List *ancestors,
 			appendStringInfoString(es->str, "->  ");
 			es->indent += 2;
 		}
+
+		if(plan->vectorized)
+			appendStringInfoString(es->str, "vectorized ");
+
 		appendStringInfoString(es->str, pname);
 
 		/*
@@ -1570,11 +1574,6 @@ ExplainNode(PlanState *planstate, List *ancestors,
 
 		show_dispatch_info(es->currentSlice, es, plan);
 	}
-
-	if(plan->vectorized)
-		appendStringInfoString(es->str, "vectorized ");
-
-	appendStringInfoString(es->str, pname);
 
 	switch (nodeTag(plan))
 	{
