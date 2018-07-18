@@ -275,7 +275,7 @@ HasVecExecOprator(NodeTag tag)
 	switch(tag)
 	{
 	case T_AppendOnlyScan:
-		case T_AOCSScan:
+	case T_AOCSScan:
 #if 0
 	case T_ParquetScan:
 #endif

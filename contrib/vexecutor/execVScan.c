@@ -41,7 +41,7 @@ getVScanMethod(int tableType)
 					//AOCOSCAN
 					{
 							/* The same set of methods serve both AO and AOCO scans */
-						&AppendOnlyScanNext, NULL, &BeginScanAppendOnlyRelation, &EndScanAppendOnlyRelation, NULL, NULL, NULL
+						&AppendOnlyVScanNext, NULL, &BeginVScanAOCSRelation, &EndVScanAOCSRelation, NULL, NULL, NULL
 					},
 
 #if 0

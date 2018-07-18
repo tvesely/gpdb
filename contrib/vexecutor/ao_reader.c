@@ -31,6 +31,27 @@ EndVScanAppendOnlyRelation(ScanState *scanState)
     EndScanAppendOnlyRelation(scanState);
 }
 
+void
+BeginVScanAOCSRelation(ScanState *scanState)
+{
+	BeginScanAOCSRelation(scanState);
+	VectorizedState* vs = (VectorizedState*)scanState->ps.vectorized;
+	TupleBatch tb = scanState->ss_ScanTupleSlot->PRIVATE_tb;
+	vs->ao = palloc0(sizeof(aoinfo));
+	vs->ao->proj = palloc0(sizeof(bool) * tb->ncols);
+	GetNeededColumnsForScan((Node* )scanState->ps.plan->targetlist,vs->ao->proj,tb->ncols);
+	GetNeededColumnsForScan((Node* )scanState->ps.plan->qual,vs->ao->proj,tb->ncols);
+}
+
+void
+EndVScanAOCSRelation(ScanState *scanState)
+{
+	VectorizedState* vs = (VectorizedState*)scanState->ps.vectorized;
+	pfree(vs->ao->proj);
+	pfree(vs->ao);
+	EndScanAOCSRelation(scanState);
+}
+
 static TupleTableSlot *
 AOScanNext(ScanState *scanState)
 {
@@ -65,6 +86,38 @@ AOScanNext(ScanState *scanState)
 }
 
 
+static TupleTableSlot *
+AOCOScanNext(ScanState *scanState)
+{
+	Assert(IsA(scanState, TableScanState) ||
+		       IsA(scanState, DynamicTableScanState));
+	AppendOnlyScanState *node = (AOCSScanState *)scanState;
+	VectorizedState* vs = scanState->ps.vectorized;
+
+	AOCSScanDesc	scandesc;
+	EState	   *estate;
+	ScanDirection direction;
+	TupleTableSlot *slot;
+
+	Assert((node->ss.scan_state & SCAN_SCAN) != 0);
+
+	estate = node->ss.ps.state;
+	scandesc = node->aos_ScanDesc;
+	direction = estate->es_direction;
+	slot = node->ss.ss_ScanTupleSlot;
+
+	aocs_getnext(scandesc, direction, slot);
+
+	if (TupIsNull(slot))
+	{
+		vs->ao->isDone = true;
+	}
+
+	pgstat_count_heap_getnext(scandesc->aos_rel);
+
+	return slot;
+}
+
 TupleTableSlot *
 AppendOnlyVScanNext(ScanState *scanState)
 {
@@ -80,7 +133,15 @@ AppendOnlyVScanNext(ScanState *scanState)
 
     for(tb->nrows = 0;tb->nrows < tb->batchsize;tb->nrows ++)
     {
-        slot = AOScanNext(scanState);
+	    if (scanState->tableType == TableTypeAOCS)
+	    {
+		    slot = AOCOScanNext(scanState);
+	    }
+	    else if (scanState->tableType == TableTypeAppendOnly)
+	    {
+		    slot = AOScanNext(scanState);
+	    } else
+			elog(ERROR, "Cannot get next for table type: %d", scanState->tableType);
 
         if(TupIsNull(slot))
             break;

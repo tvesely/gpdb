@@ -5,14 +5,19 @@
 
 #include "access/heapam.h"
 #include "cdb/cdbappendonlyam.h"
+#include "cdb/cdbaocsam.h"
 #include "cdb/cdbvars.h"
 #include "executor/execdebug.h"
 //#include "executor/nodeAppendOnlyscan.h"
 
 void
 BeginVScanAppendOnlyRelation(ScanState *scanState);
+void
+BeginVScanAOCSRelation(ScanState *scanState);
 TupleTableSlot *AppendOnlyVScanNext(ScanState *node);
 void
 EndVScanAppendOnlyRelation(ScanState *scanState);
+void
+EndVScanAOCSRelation(ScanState *scanState);
 
 #endif
