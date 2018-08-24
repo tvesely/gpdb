@@ -4994,7 +4994,7 @@ struct config_string ConfigureNamesString_gp[] =
 	{
 		{"explain_memory_verbosity", PGC_USERSET, RESOURCES_MEM,
 			gettext_noop("Experimental feature: show memory account usage in EXPLAIN ANALYZE."),
-			gettext_noop("Valid values are SUPPRESS, SUMMARY, and DETAIL."),
+			gettext_noop("Valid values are SUPPRESS, SUMMARY, DETAIL, and DEBUG."),
 			GUC_GPDB_ADDOPT
 		},
 		&explain_memory_verbosity_str,
@@ -5801,6 +5801,11 @@ assign_explain_memory_verbosity(const char *newval, bool doit, GucSource source)
 	{
 		if (doit)
 			explain_memory_verbosity = EXPLAIN_MEMORY_VERBOSITY_DETAIL;
+	}
+	else if (pg_strcasecmp(newval, "debug") == 0)
+	{
+		if (doit)
+			explain_memory_verbosity = EXPLAIN_MEMORY_VERBOSITY_DEBUG;
 	}
 	else
 	{
