@@ -138,6 +138,9 @@ static void
 vacuum_combine_stats(VacuumStatsContext *stats_context,
 					CdbPgResults* cdb_pgresults);
 
+static bool
+gp_database_needs_autovacuum(Form_pg_database dbform, TransactionId xid);
+
 static void vacuum_appendonly_index(Relation indexRelation,
 						AppendOnlyIndexVacuumState *vacuumIndexState,
 						double rel_tuple_count, int elevel);
@@ -1790,6 +1793,7 @@ vac_truncate_clog(TransactionId frozenXID, MultiXactId frozenMulti)
 	Oid			oldestxid_datoid;
 	Oid			oldestmulti_datoid;
 	bool		frozenAlreadyWrapped = false;
+	bool		signal_autovacuum = false;
 
 	/* init oldest datoids to sync with my frozen values */
 	oldestxid_datoid = MyDatabaseId;
@@ -1831,6 +1835,21 @@ vac_truncate_clog(TransactionId frozenXID, MultiXactId frozenMulti)
 			frozenMulti = dbform->datminmxid;
 			oldestmulti_datoid = HeapTupleGetOid(tuple);
 		}
+
+		/*
+		 * We should only signal the postmaster that it should
+		 * start another autovacuum worker when there are more
+		 * databases to be vacuumed.
+		 *
+		 * In GPDB, autovacuum only vacuums databases that do
+		 * not allow connections. If we signal for an autovacuum
+		 * for databases that *do* allow connections autovacuum
+		 * will skip vacuuming for that database, find more work
+		 * to do, and signal for another autovacuum - entering
+		 * an endless loop.
+		 */
+		if (gp_database_needs_autovacuum(dbform, myXID))
+			signal_autovacuum = true;
 	}
 
 	heap_endscan(scan);
@@ -1861,7 +1880,7 @@ vac_truncate_clog(TransactionId frozenXID, MultiXactId frozenMulti)
 	 * for an(other) autovac cycle if needed.	XXX should we avoid possibly
 	 * signalling twice?
 	 */
-	SetTransactionIdLimit(frozenXID, oldestxid_datoid);
+	SetTransactionIdLimit(frozenXID, oldestxid_datoid, signal_autovacuum);
 	MultiXactAdvanceOldest(frozenMulti, oldestmulti_datoid);
 }
 
@@ -2919,4 +2938,26 @@ vacuum_combine_stats(VacuumStatsContext *stats_context, CdbPgResults* cdb_pgresu
 					lappend(stats_context->updated_stats, pgclass_stats);
 		}
 	}
+}
+
+/*
+ * autovacuum when the current transaction id is older than the
+ * autovacuum_freeze_max_age iff the database does not
+ * allow connections.
+ */
+static bool
+gp_database_needs_autovacuum(Form_pg_database dbform, TransactionId xid)
+{
+	TransactionId xidVacLimit;
+
+	/*
+	 * do not autovacuum databases if it allows connections, even
+	 * if it is older than the autovacuum freeze max age.
+	 */
+	if (dbform->datallowconn)
+		return false;
+
+	xidVacLimit = dbform->datfrozenxid + autovacuum_freeze_max_age;
+
+	return TransactionIdPrecedesOrEquals(xidVacLimit, xid);
 }
