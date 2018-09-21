@@ -138,9 +138,6 @@ static void
 vacuum_combine_stats(VacuumStatsContext *stats_context,
 					CdbPgResults* cdb_pgresults);
 
-static bool
-gp_database_needs_autovacuum(Form_pg_database dbform, TransactionId xid);
-
 static void vacuum_appendonly_index(Relation indexRelation,
 						AppendOnlyIndexVacuumState *vacuumIndexState,
 						double rel_tuple_count, int elevel);
@@ -1848,7 +1845,7 @@ vac_truncate_clog(TransactionId frozenXID, MultiXactId frozenMulti)
 		 * to do, and signal for another autovacuum - entering
 		 * an endless loop.
 		 */
-		if (gp_database_needs_autovacuum(dbform, myXID))
+		if (GpDatabaseNeedsAutovacuum(dbform, myXID))
 			signal_autovacuum = true;
 	}
 
@@ -2940,24 +2937,3 @@ vacuum_combine_stats(VacuumStatsContext *stats_context, CdbPgResults* cdb_pgresu
 	}
 }
 
-/*
- * autovacuum when the current transaction id is older than the
- * autovacuum_freeze_max_age iff the database does not
- * allow connections.
- */
-static bool
-gp_database_needs_autovacuum(Form_pg_database dbform, TransactionId xid)
-{
-	TransactionId xidVacLimit;
-
-	/*
-	 * do not autovacuum databases if it allows connections, even
-	 * if it is older than the autovacuum freeze max age.
-	 */
-	if (dbform->datallowconn)
-		return false;
-
-	xidVacLimit = dbform->datfrozenxid + autovacuum_freeze_max_age;
-
-	return TransactionIdPrecedesOrEquals(xidVacLimit, xid);
-}
