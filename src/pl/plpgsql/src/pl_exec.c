@@ -5083,6 +5083,16 @@ exec_simple_check_plan(PLpgSQL_expr *expr)
 		return;
 
 	/*
+	 * GPDB: Because we evaluate stable functions in the planner
+	 * for purposes of partition pruning, etc, we often generate a one-off plan.
+	 * If we continuously evaluate one-off plans as simple expressions, we will
+	 * generate a new ExprState for each tuple, and never clean them up (until
+	 * we call plpgsql_xact_cb).
+	 */
+	if (stmt->oneoffPlan)
+		return;
+
+	/*
 	 * Yes - this is a simple expression.  Mark it as such, and initialize
 	 * state to "not valid in current transaction".
 	 */
