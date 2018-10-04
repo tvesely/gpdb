@@ -886,6 +886,12 @@ extern bool gp_cost_hashjoin_chainwalk;
 extern int cdb_total_slices;
 extern int cdb_max_slices;
 
+/*
+ * When true, the planner evaluates stable functions to generate a
+ * oneoffPlan.
+ */
+extern bool gp_enable_stable_function_eval;
+
 typedef struct GpId
 {
 	int32		numsegments;	/* count of distinct segindexes */

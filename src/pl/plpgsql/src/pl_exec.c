@@ -5006,8 +5006,33 @@ exec_eval_simple_expr(PLpgSQL_execstate *estate,
 	/*
 	 * Revalidate cached plan, so that we will notice if it became stale. (We
 	 * need to hold a refcount while using the plan, anyway.)
+	 *
+	 * GPDB: Normally, GPDB will evaluate stable functions inside the planner.
+	 * This is a problem for pl/pgsql simple exressions because we assume that
+	 * there is only one expression state (expr_simple_state) per simple
+	 * expression and that it lives until the end of transaction
+	 * (plpgsql_xact_cb).  If a stable function is evaluated by the planner, we
+	 * will be forced to replan this simple expression every time we attempt to
+	 * get a plan from the plan cache.  When this happens, we will create a new
+	 * simple expression state every time.
+	 *
+	 * Evaluating stable functions for partition elimination is not useful in
+	 * case of pl/pgsql simple expressions because they do not perform table
+	 * scans.
 	 */
-	cplan = SPI_plan_get_cached_plan(expr->plan);
+	PG_TRY();
+	{
+		gp_enable_stable_function_eval = false;
+		cplan = SPI_plan_get_cached_plan(expr->plan);
+	}
+	PG_CATCH();
+	{
+		gp_enable_stable_function_eval = true;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	gp_enable_stable_function_eval = true;
 
 	/*
 	 * We can't get a failure here, because the number of CachedPlanSources in

@@ -148,6 +148,7 @@ static Node *substitute_actual_srf_parameters_mutator(Node *node,
 static bool tlist_matches_coltypelist(List *tlist, List *coltypelist);
 static bool contain_grouping_clause_walker(Node *node, void *context);
 
+bool gp_enable_stable_function_eval = true;
 
 /*****************************************************************************
  *		OPERATOR clause functions
@@ -4338,7 +4339,8 @@ evaluate_function(Oid funcid, Oid result_type, int32 result_typmod,
 		 /* okay */ ;
 	else if (context->estimate && funcform->provolatile == PROVOLATILE_STABLE)
 		 /* okay */ ;
-	else if (context->root && context->root->glob && funcform->provolatile == PROVOLATILE_STABLE)
+	else if (context->root && context->root->glob && funcform->provolatile == PROVOLATILE_STABLE
+			 && gp_enable_stable_function_eval)
 	{
 		/*
 		 * okay, but we cannot reuse this plan
