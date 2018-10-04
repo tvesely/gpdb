@@ -112,6 +112,7 @@ static Node *substitute_actual_parameters_mutator(Node *node,
 static void sql_inline_error_callback(void *arg);
 static bool contain_grouping_clause_walker(Node *node, void *context);
 
+bool enable_stable_function_eval = true;
 /*****************************************************************************
  *		OPERATOR clause functions
  *****************************************************************************/
@@ -1995,7 +1996,7 @@ eval_const_expressions_mutator(Node *node,
 			{
 				/* OK to substitute parameter value? */
 				if (context->estimate || (prm->pflags & PARAM_FLAG_CONST) ||
-					context->glob)
+						(context->glob && enable_stable_function_eval))
 				{
 					/*
 					 * Return a Const representing the param value.  Must copy
@@ -3447,7 +3448,8 @@ evaluate_function(Oid funcid, Oid result_type, int32 result_typmod, List *args,
 		 /* okay */ ;
 	else if (context->estimate && funcform->provolatile == PROVOLATILE_STABLE)
 		 /* okay */ ;
-	else if (context->glob && funcform->provolatile == PROVOLATILE_STABLE)
+	else if (context->glob && funcform->provolatile == PROVOLATILE_STABLE 
+			 && enable_stable_function_eval)
 	{
 		 /* okay, but we cannot reuse this plan */
 		context->glob->oneoffPlan = true;

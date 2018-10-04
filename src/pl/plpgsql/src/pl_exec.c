@@ -37,6 +37,7 @@
 
 
 static const char *const raise_skip_msg = "RAISE";
+extern bool enable_stable_function_eval;
 
 /*
  * All plpgsql function executions within a single transaction share the same
@@ -4297,7 +4298,21 @@ exec_eval_simple_expr(PLpgSQL_execstate *estate,
 	 */
 	Assert(list_length(expr->plan->plancache_list) == 1);
 	plansource = (CachedPlanSource *) linitial(expr->plan->plancache_list);
-	cplan = RevalidateCachedPlan(plansource, true);
+	
+	PG_TRY();
+	{
+		enable_stable_function_eval = false;
+		cplan = RevalidateCachedPlan(plansource, true);
+	}
+	PG_CATCH();
+	{
+		enable_stable_function_eval = true;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
+
+	enable_stable_function_eval = true;
+	
 	if (cplan->generation != expr->expr_simple_generation)
 	{
 		/* It got replanned ... is it still simple? */
