@@ -67,6 +67,7 @@ typedef struct
 	List	   *active_fns;
 	Node	   *case_val;
 	bool		estimate;
+	bool		eval_stable_functions;
 	bool		recurse_queries; /* recurse into query structures */
 	bool		recurse_sublink_testexpr; /* recurse into sublink test expressions */
 	Size        max_size; /* max constant binary size in bytes, 0: no restrictions */
@@ -150,6 +151,11 @@ static Node *substitute_actual_srf_parameters_mutator(Node *node,
 static bool tlist_matches_coltypelist(List *tlist, List *coltypelist);
 static bool contain_grouping_clause_walker(Node *node, void *context);
 
+/*
+ * Greenplum specific functions
+ */
+static bool planner_should_eval_stable_functions(PlannerInfo *root);
+static bool optimizer_should_eval_stable_functions(Query *parse);
 
 /*****************************************************************************
  *		OPERATOR clause functions
@@ -2433,6 +2439,8 @@ fold_constants(PlannerInfo *root, Query *q, ParamListInfo boundParams, Size max_
 
 	context.max_size = max_size;
 	
+	context.eval_stable_functions = optimizer_should_eval_stable_functions(q);
+
 	return (Query *) query_or_expression_tree_mutator
 						(
 						(Node *) q,
@@ -2568,6 +2576,17 @@ eval_const_expressions(PlannerInfo *root, Node *node)
 	context.recurse_queries = false; /* do not recurse into query structures */
 	context.recurse_sublink_testexpr = true;
 	context.max_size = 0;
+
+	/*
+	 * If this expression is part of a query, and the query isn't a simple
+	 * "SELECT foo()" style query with no actual tables involved, then we
+	 * also aggressively evaluate stable functions, in addition to immutable
+	 * ones. Such plans cannot be reused, and therefore need to be re-planned
+	 * on every execution, but it can be a big win if it allows partition
+	 * elimination to happen. That's considered a good tradeoff in GPDB, as
+	 * typical queries are long-running.
+	 */
+	context.eval_stable_functions = planner_should_eval_stable_functions(root);
 
 	return eval_const_expressions_mutator(node, &context);
 }
@@ -4479,18 +4498,9 @@ evaluate_function(Oid funcid, Oid result_type, int32 result_typmod,
 		 /* okay */ ;
 	else if (context->estimate && funcform->provolatile == PROVOLATILE_STABLE)
 		 /* okay */ ;
-	else if (context->root && context->root->glob && funcform->provolatile == PROVOLATILE_STABLE)
+	else if (context->eval_stable_functions && funcform->provolatile == PROVOLATILE_STABLE)
 	{
-		/*
-		 * okay, but we cannot reuse this plan
-		 *
-		 * Explanation: in GPDB, unlike in upstream, we go ahead and evaluate
-		 * stable functions in any case. But it means that the plan is only
-		 * good for this execution, and will need to be re-planned on next one.
-		 * For GPDB, that's considered a good tradeoff, as typical queries are
-		 * long running, and evaluating the stable functions aggressively can
-		 * allow partition pruning to happen, which can be a big win.
-		 */
+		/* okay, but we cannot reuse this plan */
 		context->root->glob->oneoffPlan = true;
 	}
 	else
@@ -5728,4 +5738,36 @@ tlist_matches_coltypelist(List *tlist, List *coltypelist)
 		return false;			/* too few tlist items */
 
 	return true;
+}
+
+static bool
+planner_should_eval_stable_functions(PlannerInfo *root)
+{
+	/*
+	 * If the query has no range table, then there is no reason to need to
+	 * pre-evaluate stable functions, as the output cannot be used as part
+	 * of static partition elimination, unless the query is part of a
+	 * subquery.
+	 */
+	if (root && (root->parse->rtable || root->query_level > 1) && root->glob)
+		return true;
+	else
+		return false;
+}
+
+static bool
+optimizer_should_eval_stable_functions(Query *parse)
+{
+	/*
+	 * If the rangetable is NIL, then the resulting plan could be
+	 * considered to be a simple expression by PL/pgSQL. The plan cache
+	 * cannot reuse plans that have pre-evaluated stable functions, so
+	 * disable it in such cases. It is ok to do this with queries with no
+	 * range table, because it will never need to use it for static
+	 * partition elimination or determination of implied quals.
+	 */
+	if (parse->rtable != NIL)
+		return true;
+	else
+		return false;
 }
