@@ -960,15 +960,18 @@ index_create(Relation heapRelation,
 						!deferrable,
 						!concurrent);
 
-	/* update pg_inherits, if needed */
-	if (OidIsValid(parentIndexRelid))
-		StoreSingleInheritance(indexRelationId, parentIndexRelid, 1);
-	
 	/*
 	 * Register relcache invalidation on the indexes' heap relation, to
 	 * maintain consistency of its index list
 	 */
 	CacheInvalidateRelcache(heapRelation);
+
+	/* update pg_inherits and the parent's relhassubclass, if needed */
+	if (OidIsValid(parentIndexRelid))
+	{
+		StoreSingleInheritance(indexRelationId, parentIndexRelid, 1);
+		SetRelationHasSubclass(parentIndexRelid, true);
+	}
 
 	/*
 	 * Register constraint and dependencies for the index.

@@ -2690,6 +2690,10 @@ IndexSetParentIndex(Relation partitionIdx, Oid parentOid)
 	systable_endscan(scan);
 	relation_close(pg_inherits, RowExclusiveLock);
 
+	/* set relhassubclass if an index partition has been added to the parent */
+	if (OidIsValid(parentOid))
+		SetRelationHasSubclass(parentOid, true);
+
 	if (fix_dependencies)
 	{
 		ObjectAddress partIdx;
@@ -2722,5 +2726,8 @@ IndexSetParentIndex(Relation partitionIdx, Oid parentOid)
 
 			recordDependencyOn(&partIdx, &partitionTbl, DEPENDENCY_AUTO);
 		}
+
+		/* make our updates visible */
+		CommandCounterIncrement();
 	}
 }
