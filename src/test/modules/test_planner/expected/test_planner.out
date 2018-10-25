@@ -1,0 +1,23 @@
+-- start_matchsubs
+-- # Remove all successful
+-- m/INFO:  Success.*\.c:\d+/
+-- s/\d+/###/
+-- end_matchsubs
+--start_ignore
+CREATE EXTENSION IF NOT EXISTS test_planner;
+--end_ignore
+SELECT test_planner();
+INFO:  Success test_vanilla_subquery_has_correct_extparams - integration_tests/planner_integration_tests.c:46
+INFO:  Success test_vanilla_subquery_has_correct_extparams - integration_tests/planner_integration_tests.c:49
+INFO:  Success test_vanilla_subquery_has_correct_extparams - integration_tests/planner_integration_tests.c:52
+INFO:  Success test_vanilla_subquery_has_correct_extparams - integration_tests/planner_integration_tests.c:55
+INFO:  Success test_window_function_with_subquery_has_correct_extparams - integration_tests/planner_integration_tests.c:22
+INFO:  Success test_window_function_with_subquery_has_correct_extparams - integration_tests/planner_integration_tests.c:25
+INFO:  Success test_window_function_with_subquery_has_correct_extparams - integration_tests/planner_integration_tests.c:28
+INFO:  Success test_window_function_with_subquery_has_correct_extparams - integration_tests/planner_integration_tests.c:31
+ test_planner 
+--------------
+ 
+(1 row)
+
+DROP EXTENSION test_planner;
