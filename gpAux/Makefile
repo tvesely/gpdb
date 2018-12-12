@@ -163,7 +163,7 @@ aix7_ppc_64_CONFIGFLAGS=--disable-gpcloud --without-readline --without-libcurl -
 win32_CONFIGFLAGS=--with-gssapi --without-libcurl --disable-orca --disable-pxf --disable-gpcloud --without-libbz2 $(APR_CONFIG)
 sol10_x86_64_CONFIGFLAGS= --with-libxml $(APR_CONFIG)
 rhel6_x86_64_CONFIGFLAGS=--enable-tap-tests --enable-gpperfmon --with-gssapi --enable-mapreduce --enable-orafce ${ORCA_CONFIG} --with-libxml $(APR_CONFIG) $(APU_CONFIG)
-rhel7_x86_64_CONFIGFLAGS=--enable-tap-tests --enable-gpperfmon --with-gssapi --enable-mapreduce --enable-orafce ${ORCA_CONFIG} --with-libxml $(APR_CONFIG) $(APU_CONFIG)
+rhel7_x86_64_CONFIGFLAGS=--enable-tap-tests --enable-gpperfmon --with-gssapi --enable-mapreduce --enable-orafce ${ORCA_CONFIG} --with-libxml
 #suse10_x86_64_CONFIGFLAGS=--enable-gpperfmon --with-gssapi ${ORCA_CONFIG} --with-libxml $(APR_CONFIG) $(APU_CONFIG)
 #suse11_x86_64_CONFIGFLAGS=--enable-gpperfmon --with-gssapi ${ORCA_CONFIG} --with-libxml $(APR_CONFIG) $(APU_CONFIG)
 #sles11_x86_64_CONFIGFLAGS=--enable-gpperfmon --with-gssapi ${ORCA_CONFIG} --with-libxml $(APR_CONFIG) $(APU_CONFIG)
@@ -222,7 +222,11 @@ BLD_CURL_CONFIG=CURL_CONFIG=$(BLD_THIRDPARTY_BIN_DIR)/curl-config
 endif
 # ...and do not include the authlibs on Windows or AIX
 ifeq "$(findstring $(BLD_ARCH),aix7_ppc_64 aix5_ppc_64 win32 win64)" ""
-CONFIGFLAGS+= --with-openssl --with-pam --with-ldap $(BLD_CURL_CONFIG) $(APR_CONFIG)
+CONFIGFLAGS+= --with-openssl --with-pam --with-ldap $(BLD_CURL_CONFIG)
+endif
+
+ifeq "$(findstring $(BLD_ARCH),rhel7_x86_64)" ""
+CONFIGFLAGS+= $(APR_CONFIG)
 endif
 
 # ...but do include some of the authlibs on AIX
