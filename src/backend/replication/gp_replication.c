@@ -30,67 +30,84 @@ extern pg_time_t PMAcceptingConnectionsStartTime;
 void
 GetMirrorStatus(FtsResponse *response)
 {
+	pg_time_t walsender_replica_disconnected_at = 0;
+	bool found = false;
+
 	response->IsMirrorUp = false;
 	response->IsInSync = false;
 	response->RequestRetry = false;
 
 	LWLockAcquire(SyncRepLock, LW_SHARED);
 
-	for (int i = 0; i < max_wal_senders; i++)
+	for (int i = 0; !found && i < max_wal_senders; i++)
 	{
-		WalSnd   *walsnd = &WalSndCtl->walsnds[i];
-		pg_time_t walsnd_replica_disconnected_at;
+		WalSnd *walsender = &WalSndCtl->walsnds[i];
 
-		SpinLockAcquire(&walsnd->mutex);
-		if (walsnd->pid != 0)
+		SpinLockAcquire(&walsender->mutex);
+
+		if (walsender->is_gp_walreceiver)
+			found = true;
+
+		bool walsender_has_pid = walsender->pid != 0;
+
+		/*
+		 * WalSndSetState() resets replica_disconnected_at for
+		 * below states. If modifying below states then be sure
+		 * to update corresponding logic in WalSndSetState() as
+		 * well.
+		 */
+		bool is_communicating_with_mirror = walsender->state == WALSNDSTATE_CATCHUP ||
+					walsender->state == WALSNDSTATE_STREAMING;
+		
+		if (walsender->is_gp_walreceiver && walsender_has_pid
+			&& is_communicating_with_mirror)
 		{
-			/*
-			 * WalSndSetState() resets replica_disconnected_at for
-			 * below states. If modifying below states then be sure
-			 * to update corresponding logic in WalSndSetState() as
-			 * well.
-			 */
-			if(walsnd->state == WALSNDSTATE_CATCHUP
-			   || walsnd->state == WALSNDSTATE_STREAMING)
-			{
-				response->IsMirrorUp = true;
-				response->IsInSync = (walsnd->state == WALSNDSTATE_STREAMING);
-			}
+			response->IsMirrorUp = true;
+			response->IsInSync = (walsender->state == WALSNDSTATE_STREAMING);
 		}
-		walsnd_replica_disconnected_at = walsnd->replica_disconnected_at;
-		SpinLockRelease(&walsnd->mutex);
 
-		if (!response->IsMirrorUp)
+		/*
+		 * If no is_gp_walreceiver WalSnd object is found, use any WalSnd
+		 * object's replica disconnection time.  This should normally
+		 * happen after startup, during the small window when mirror has
+		 * not connected yet.  After the first mirror connection, we are
+		 * guaranteed to find a WalSnd object with is_gp_walreceiver =
+		 * true.
+		 */
+		walsender_replica_disconnected_at = walsender->replica_disconnected_at;
+		
+		SpinLockRelease(&walsender->mutex);
+	}
+
+	if (!response->IsMirrorUp)
+	{
+		/*
+		 * PMAcceptingConnectionStartTime is process-local variable, set in
+		 * postmaster process and inherited by the FTS handler child
+		 * process. This works because the timestamp is set only once by
+		 * postmaster, and is guaranteed to be set before FTS handler child
+		 * processes can be spawned.
+		 */
+		Assert(PMAcceptingConnectionsStartTime);
+		pg_time_t delta = ((pg_time_t) time(NULL)) - Max(walsender_replica_disconnected_at, PMAcceptingConnectionsStartTime);
+		/*
+		 * Report mirror as down, only if it didn't connect for below
+		 * grace period to primary. This helps to avoid marking mirror
+		 * down unnecessarily when restarting primary or due to small n/w
+		 * glitch. During this period, request FTS to probe again.
+		 *
+		 * If the delta is negative, then it's overflowed, meaning it's
+		 * over gp_fts_mark_mirror_down_grace_period since either last
+		 * database accepting connections or last time wal sender
+		 * died. Then, we can safely mark the mirror is down.
+		 */
+		if (delta < gp_fts_mark_mirror_down_grace_period && delta >= 0)
 		{
-			Assert(walsnd_replica_disconnected_at);
-			/*
-			 * PMAcceptingConnectionStartTime is process-local variable, set in
-			 * postmaster process and inherited by the FTS handler child
-			 * process. This works because the timestamp is set only once by
-			 * postmaster, and is guaranteed to be set before FTS handler child
-			 * processes can be spawned.
-			 */
-			Assert(PMAcceptingConnectionsStartTime);
-			pg_time_t delta = ((pg_time_t) time(NULL)) - Max(walsnd_replica_disconnected_at, PMAcceptingConnectionsStartTime);
-			/*
-			 * Report mirror as down, only if it didn't connect for below
-			 * grace period to primary. This helps to avoid marking mirror
-			 * down unnecessarily when restarting primary or due to small n/w
-			 * glitch. During this period, request FTS to probe again.
-			 *
-			 * If the delta is negative, then it's overflowed, meaning it's
-			 * over gp_fts_mark_mirror_down_grace_period since either last
-			 * database accepting connections or last time wal sender
-			 * died. Then, we can safely mark the mirror is down.
-			 */
-			if (delta < gp_fts_mark_mirror_down_grace_period && delta >= 0)
-			{
-				ereport(LOG,
-						(errmsg("requesting fts retry as mirror didn't connect yet but in grace period: " INT64_FORMAT, delta),
-						 errdetail("pid zero at time: " INT64_FORMAT " accept connections start time: " INT64_FORMAT,
-									  walsnd_replica_disconnected_at, PMAcceptingConnectionsStartTime)));
-				response->RequestRetry = true;
-			}
+			ereport(LOG,
+					(errmsg("requesting fts retry as mirror didn't connect yet but in grace period: " INT64_FORMAT, delta),
+					 errdetail("pid zero at time: " INT64_FORMAT " accept connections start time: " INT64_FORMAT,
+							   walsender_replica_disconnected_at, PMAcceptingConnectionsStartTime)));
+			response->RequestRetry = true;
 		}
 	}
 
