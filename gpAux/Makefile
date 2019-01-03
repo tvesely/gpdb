@@ -167,12 +167,11 @@ rhel7_x86_64_CONFIGFLAGS=--enable-tap-tests --enable-gpperfmon --with-gssapi --e
 #suse10_x86_64_CONFIGFLAGS=--enable-gpperfmon --with-gssapi ${ORCA_CONFIG} --with-libxml $(APR_CONFIG) $(APU_CONFIG)
 #suse11_x86_64_CONFIGFLAGS=--enable-gpperfmon --with-gssapi ${ORCA_CONFIG} --with-libxml $(APR_CONFIG) $(APU_CONFIG)
 #sles11_x86_64_CONFIGFLAGS=--enable-gpperfmon --with-gssapi ${ORCA_CONFIG} --with-libxml $(APR_CONFIG) $(APU_CONFIG)
-suse10_x86_64_CONFIGFLAGS=--enable-gpperfmon --with-gssapi ${ORCA_CONFIG} --with-libxml $(APR_CONFIG) $(APU_CONFIG)
-suse11_x86_64_CONFIGFLAGS=--enable-gpperfmon --with-gssapi ${ORCA_CONFIG} --with-libxml --enable-orafce $(APR_CONFIG) $(APU_CONFIG)
-sles11_x86_64_CONFIGFLAGS=--enable-gpperfmon --with-gssapi ${ORCA_CONFIG} --with-libxml --enable-orafce $(APR_CONFIG) $(APU_CONFIG)
+suse11_x86_64_CONFIGFLAGS=--enable-gpperfmon --with-gssapi ${ORCA_CONFIG} --with-libxml --enable-orafce --without-zstd $(APR_CONFIG) $(APU_CONFIG)
+sles11_x86_64_CONFIGFLAGS=--enable-gpperfmon --with-gssapi ${ORCA_CONFIG} --with-libxml --enable-orafce --without-zstd $(APR_CONFIG) $(APU_CONFIG)
 linux_x86_64_CONFIGFLAGS=${ORCA_CONFIG} --with-libxml $(APR_CONFIG)
 osx106_x86_CONFIGFLAGS=${ORCA_CONFIG} --with-libxml $(APR_CONFIG)
-ubuntu1604_amd64_CONFIGFLAGS=--enable-tap-tests --enable-gpperfmon --with-gssapi --enable-mapreduce ${ORCA_CONFIG} --with-libxml $(APR_CONFIG) $(APU_CONFIG)
+ubuntu1604_amd64_CONFIGFLAGS=--enable-tap-tests --enable-gpperfmon --with-gssapi --enable-mapreduce --without-zstd ${ORCA_CONFIG} --with-libxml $(APR_CONFIG) $(APU_CONFIG)
 
 BLD_CONFIGFLAGS=$($(BLD_ARCH)_CONFIGFLAGS)
 
