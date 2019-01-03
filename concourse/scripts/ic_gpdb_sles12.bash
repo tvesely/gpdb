@@ -42,7 +42,8 @@ setup_demo_cluster() {
         ./configure --prefix=/usr/local/greenplum-db-devel \
             --with-python --disable-orca --without-readline \
             --without-zlib --disable-gpfdist --without-libcurl \
-            --disable-pxf --without-libbz2 --enable-orafce
+            --disable-pxf --without-libbz2 --enable-orafce \
+            --without-zstd
 
         export DEFAULT_QD_MAX_CONNECT=150
         export STATEMENT_MEM=250MB

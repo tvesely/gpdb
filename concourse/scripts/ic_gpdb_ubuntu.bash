@@ -12,6 +12,8 @@ function load_transfered_bits_into_install_dir() {
 
 function configure() {
   pushd gpdb_src
+    # TODO: remove this line as soon as the Ubuntu image has zstd baked in
+    CONFIGURE_FLAGS="${CONFIGURE_FLAGS} --without-zstd"
     ./configure --prefix=${GREENPLUM_INSTALL_DIR} --with-gssapi --with-perl --with-python --with-libxml --enable-mapreduce --enable-orafce --disable-orca ${CONFIGURE_FLAGS}
   popd
 }
