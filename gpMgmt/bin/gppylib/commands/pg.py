@@ -175,7 +175,7 @@ class PgControlData(Command):
 class PgBaseBackup(Command):
     def __init__(self, pgdata, host, port, excludePaths=[], ctxt=LOCAL, remoteHost=None, forceoverwrite=False, target_gp_dbid=0):
         cmd_tokens = ['pg_basebackup',
-                           '--xlog-method', 'stream', '--slot', 'internal_wal_replication_slot', '-R',
+                           '-x', '-R',
                            '-c', 'fast']
         cmd_tokens.append('-D')
         cmd_tokens.append(pgdata)
