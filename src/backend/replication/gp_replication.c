@@ -30,7 +30,7 @@ extern pg_time_t PMAcceptingConnectionsStartTime;
 void
 GetMirrorStatus(FtsResponse *response)
 {
-	pg_time_t walsnd_replica_disconnected_at = 0;
+	pg_time_t walsender_replica_disconnected_at = 0;
 	bool found = false;
 
 	response->IsMirrorUp = false;
@@ -41,43 +41,42 @@ GetMirrorStatus(FtsResponse *response)
 
 	for (int i = 0; !found && i < max_wal_senders; i++)
 	{
-		WalSnd   *walsnd = &WalSndCtl->walsnds[i];
+		WalSnd *walsender = &WalSndCtl->walsnds[i];
 
-		SpinLockAcquire(&walsnd->mutex);
-		if (walsnd->is_gp_walreceiver)
-		{
+		SpinLockAcquire(&walsender->mutex);
+
+		if (walsender->is_gp_walreceiver)
 			found = true;
-			if (walsnd->pid != 0)
-			{
-				/*
-				 * WalSndSetState() resets replica_disconnected_at for
-				 * below states. If modifying below states then be sure
-				 * to update corresponding logic in WalSndSetState() as
-				 * well.
-				 */
-				if(walsnd->state == WALSNDSTATE_CATCHUP
-				   || walsnd->state == WALSNDSTATE_STREAMING)
-				{
-					response->IsMirrorUp = true;
-					response->IsInSync = (walsnd->state == WALSNDSTATE_STREAMING);
-				}
-			}
-			walsnd_replica_disconnected_at = walsnd->replica_disconnected_at;
-		}
-		else if (!found)
+
+		bool walsender_has_pid = walsender->pid != 0;
+
+		/*
+		 * WalSndSetState() resets replica_disconnected_at for
+		 * below states. If modifying below states then be sure
+		 * to update corresponding logic in WalSndSetState() as
+		 * well.
+		 */
+		bool is_communicating_with_mirror = walsender->state == WALSNDSTATE_CATCHUP ||
+					walsender->state == WALSNDSTATE_STREAMING;
+		
+		if (walsender->is_gp_walreceiver && walsender_has_pid
+			&& is_communicating_with_mirror)
 		{
-			/*
-			 * If no is_gp_walreceiver WalSnd object is found, use any WalSnd
-			 * object's replica disconnection time.  This should normally
-			 * happen after startup, during the small window when mirror has
-			 * not connected yet.  After the first mirror connection, we are
-			 * guaranteed to find a WalSnd object with is_gp_walreceiver =
-			 * true.
-			 */
-			walsnd_replica_disconnected_at = walsnd->replica_disconnected_at;
+			response->IsMirrorUp = true;
+			response->IsInSync = (walsender->state == WALSNDSTATE_STREAMING);
 		}
 
-		SpinLockRelease(&walsnd->mutex);
+		/*
+		 * If no is_gp_walreceiver WalSnd object is found, use any WalSnd
+		 * object's replica disconnection time.  This should normally
+		 * happen after startup, during the small window when mirror has
+		 * not connected yet.  After the first mirror connection, we are
+		 * guaranteed to find a WalSnd object with is_gp_walreceiver =
+		 * true.
+		 */
+		walsender_replica_disconnected_at = walsender->replica_disconnected_at;
+		
+		SpinLockRelease(&walsender->mutex);
 	}
 
 	if (!response->IsMirrorUp)
@@ -90,7 +89,7 @@ GetMirrorStatus(FtsResponse *response)
 		 * processes can be spawned.
 		 */
 		Assert(PMAcceptingConnectionsStartTime);
-		pg_time_t delta = ((pg_time_t) time(NULL)) - Max(walsnd_replica_disconnected_at, PMAcceptingConnectionsStartTime);
+		pg_time_t delta = ((pg_time_t) time(NULL)) - Max(walsender_replica_disconnected_at, PMAcceptingConnectionsStartTime);
 		/*
 		 * Report mirror as down, only if it didn't connect for below
 		 * grace period to primary. This helps to avoid marking mirror
@@ -107,7 +106,7 @@ GetMirrorStatus(FtsResponse *response)
 			ereport(LOG,
 					(errmsg("requesting fts retry as mirror didn't connect yet but in grace period: " INT64_FORMAT, delta),
 					 errdetail("pid zero at time: " INT64_FORMAT " accept connections start time: " INT64_FORMAT,
-							   walsnd_replica_disconnected_at, PMAcceptingConnectionsStartTime)));
+							   walsender_replica_disconnected_at, PMAcceptingConnectionsStartTime)));
 			response->RequestRetry = true;
 		}
 	}
