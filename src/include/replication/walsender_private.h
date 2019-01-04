@@ -92,10 +92,10 @@ typedef struct WalSnd
 
 	bool		synchronous;
 
-	 /*
-	  * Does this WalSnd represent a connection with Greenplum mirror in 
-	  * streaming mode?
-	  */
+	/*
+	 * Indicates whether the WalSnd represents a connection with a Greenplum
+	 * mirror in streaming mode
+	 */
 	bool 		is_gp_walreceiver;
 } WalSnd;
 

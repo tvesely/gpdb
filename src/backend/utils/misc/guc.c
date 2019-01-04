@@ -2182,7 +2182,7 @@ static struct config_int ConfigureNamesInt[] =
 		 * request and 1 WalSnd to serve the log streamer process started by
 		 * pg_basebackup.
 		 */
-		10, 0, MAX_BACKENDS,
+		10, 2, MAX_BACKENDS,
 		NULL, NULL, NULL
 	},
 
@@ -2193,7 +2193,7 @@ static struct config_int ConfigureNamesInt[] =
 			NULL
 		},
 		&max_replication_slots,
-		10, 0, MAX_BACKENDS /* XXX? */ ,
+		10, 1, MAX_BACKENDS /* XXX? */ ,
 		NULL, NULL, NULL
 	},
 
