@@ -65,6 +65,7 @@ GetMirrorStatus(FtsResponse *response)
 			walsnd_replica_disconnected_at = walsnd->replica_disconnected_at;
 		}
 		else if (!found)
+		{
 			/*
 			 * If no is_gp_walreceiver WalSnd object is found, use any WalSnd
 			 * object's replica disconnection time.  This should normally
@@ -74,7 +75,8 @@ GetMirrorStatus(FtsResponse *response)
 			 * true.
 			 */
 			walsnd_replica_disconnected_at = walsnd->replica_disconnected_at;
-			
+		}
+
 		SpinLockRelease(&walsnd->mutex);
 	}
 
