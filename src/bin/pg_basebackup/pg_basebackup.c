@@ -1690,7 +1690,9 @@ build_exclude_list(char **exclude_list, int num)
 	return buf.data;
 }
 
-static void create_replication_slot(const char *slot_name) {
+static void
+create_replication_slot(const char *slot_name)
+{
 	PGresult   *res;
 	char *create_slot_command;
 	bool is_result_an_error;
