@@ -1699,8 +1699,8 @@ create_replication_slot(const char *slot_name)
 	bool is_unexpected_number_of_tuples;
 	bool is_unexpected_number_of_fields;
 
-	int  expected_number_of_tuples = 1;
-	int  expected_number_of_fields = 4;
+	const int expected_number_of_tuples = 1;
+	const int expected_number_of_fields = 4;
 
 	create_slot_command = psprintf("CREATE_REPLICATION_SLOT \"%s\" PHYSICAL",
 	                               slot_name);
