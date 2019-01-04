@@ -11,7 +11,9 @@ cp -R debian_release/debian ${SRC_DIR}/
 
 # Regex to capture required gporca version and download gporca source
 ORCA_TAG=$(grep -Po 'v\d+.\d+.\d+' ${SRC_DIR}/depends/conanfile_orca.txt)
-git clone --branch ${ORCA_TAG} https://github.com/greenplum-db/gporca.git ${SRC_DIR}/gporca
+if [ ! -d ${SRC_DIR}/gporca ]; then
+    git clone --branch ${ORCA_TAG} https://github.com/greenplum-db/gporca.git ${SRC_DIR}/gporca
+fi
 
 report_error() {
     local result=$1
