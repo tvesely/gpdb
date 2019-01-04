@@ -47,5 +47,5 @@ def step_impl(context):
         raise Exception("expected all three primaries to have replication slots")
 
     for result in results.fetchall():
-        if not result[0].startswith('(wal_replication_slot,,physical,,t,'):
+        if not result[0].startswith('(internal_wal_replication_slot,,physical,,t,'):
             raise Exception("expected replication slot to be active")
