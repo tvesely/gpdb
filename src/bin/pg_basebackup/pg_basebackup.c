@@ -1731,7 +1731,7 @@ create_replication_slot(const char *slot_name)
 		disconnect_and_exit(1);
 	}
 
-	Assert(strcmp(slot_name, PQgetvalue(res, 0, 0)) == 0);
+	Assert(strncmp(slot_name, PQgetvalue(res, 0, 0), strlen(slot_name)) == 0);
 	PQclear(res);
 }
 
