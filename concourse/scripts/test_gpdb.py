@@ -46,18 +46,20 @@ def configure():
     p_env['CFLAGS'] = '-I/usr/local/gpdb/include'
     p_env['CPPFLAGS'] = '-I/usr/local/gpdb/include'
     p_env['LDFLAGS'] = '-L/usr/local/gpdb/lib'
-    return subprocess.call(["./configure",
-                            "--enable-mapreduce",
-                            "--enable-orafce",
-                            "--with-gssapi",
-                            "--with-perl",
-                            "--with-libxml",
-                            "--with-python",
-                            # TODO: Remove this flag after zstd is bundled with our Docker images
-                            "--without-zstd",
-                            "--with-libs=/usr/local/gpdb/lib",
-                            "--with-includes=/usr/local/gpdb/include",
-                            "--prefix=/usr/local/gpdb"], env=p_env, shell=True, cwd="gpdb_src")
+    cmd_with_options = ["./configure",
+			    "--enable-mapreduce",
+			    "--enable-orafce",
+			    "--with-gssapi",
+			    "--with-perl",
+			    "--with-libxml",
+			    "--with-python",
+			    # TODO: Remove this flag after zstd is bundled with our Docker images
+			    "--without-zstd",
+			    "--with-libs=/usr/local/gpdb/lib",
+			    "--with-includes=/usr/local/gpdb/include",
+			    "--prefix=/usr/local/gpdb"]
+    cmd = " ".join(cmd_with_options)
+    return subprocess.call(cmd, env=p_env, shell=True, cwd="gpdb_src")
 
 
 def main():
