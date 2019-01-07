@@ -77,10 +77,10 @@ t
 
 -- Then we expect that the application_name of the  WAL sender is not the same
 -- 'gp_walreceiver' application name used by primary/mirror WAL sender
-0U: select application_name from pg_stat_replication where application_name <> 'gp_walreceiver';
-application_name
-----------------
-pg_basebackup   
+0U: select count(application_name) > 0 as has_replication_app_names from pg_stat_replication where application_name <> 'gp_walreceiver';
+has_replication_app_names
+-------------------------
+t                        
 (1 row)
 
 select gp_inject_fault('wal_sender_loop', 'resume', 2);

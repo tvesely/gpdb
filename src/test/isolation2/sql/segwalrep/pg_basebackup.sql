@@ -34,7 +34,7 @@ SELECT gp_wait_until_triggered_fault('wal_sender_loop', 1, dbid) FROM gp_segment
 
 -- Then we expect that the application_name of the  WAL sender is not the same
 -- 'gp_walreceiver' application name used by primary/mirror WAL sender
-0U: select application_name from pg_stat_replication where application_name <> 'gp_walreceiver';
+0U: select count(application_name) > 0 as has_replication_app_names from pg_stat_replication where application_name <> 'gp_walreceiver';
 
 select gp_inject_fault('wal_sender_loop', 'resume', 2);
 select gp_inject_fault('wal_sender_loop', 'reset', 2);
