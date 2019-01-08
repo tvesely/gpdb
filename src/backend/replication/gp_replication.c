@@ -31,7 +31,7 @@ void
 GetMirrorStatus(FtsResponse *response)
 {
 	pg_time_t walsender_replica_disconnected_at = 0;
-	bool found = false;
+	bool found_mirror_sender = false;
 
 	response->IsMirrorUp = false;
 	response->IsInSync = false;
@@ -39,14 +39,14 @@ GetMirrorStatus(FtsResponse *response)
 
 	LWLockAcquire(SyncRepLock, LW_SHARED);
 
-	for (int i = 0; !found && i < max_wal_senders; i++)
+	for (int i = 0; !found_mirror_sender && i < max_wal_senders; i++)
 	{
 		WalSnd *walsender = &WalSndCtl->walsnds[i];
 
 		SpinLockAcquire(&walsender->mutex);
 
-		if (walsender->is_gp_walreceiver)
-			found = true;
+		if (walsender->is_for_gp_streaming_mirror)
+			found_mirror_sender = true;
 
 		bool walsender_has_pid = walsender->pid != 0;
 
@@ -59,7 +59,7 @@ GetMirrorStatus(FtsResponse *response)
 		bool is_communicating_with_mirror = walsender->state == WALSNDSTATE_CATCHUP ||
 					walsender->state == WALSNDSTATE_STREAMING;
 		
-		if (walsender->is_gp_walreceiver && walsender_has_pid
+		if (walsender->is_for_gp_streaming_mirror && walsender_has_pid
 			&& is_communicating_with_mirror)
 		{
 			response->IsMirrorUp = true;
@@ -67,11 +67,11 @@ GetMirrorStatus(FtsResponse *response)
 		}
 
 		/*
-		 * If no is_gp_walreceiver WalSnd object is found, use any WalSnd
+		 * If no is_for_gp_streaming_mirror WalSnd object is found, use any WalSnd
 		 * object's replica disconnection time.  This should normally
 		 * happen after startup, during the small window when mirror has
 		 * not connected yet.  After the first mirror connection, we are
-		 * guaranteed to find a WalSnd object with is_gp_walreceiver =
+		 * guaranteed to find a WalSnd object with is_for_gp_streaming_mirror =
 		 * true.
 		 */
 		walsender_replica_disconnected_at = walsender->replica_disconnected_at;
