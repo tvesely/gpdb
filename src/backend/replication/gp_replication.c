@@ -49,7 +49,6 @@ void
 GetMirrorStatus(FtsResponse *response)
 {
 	pg_time_t walsender_replica_disconnected_at = 0;
-	bool found_mirror_sender = false;
 
 	response->IsMirrorUp = false;
 	response->IsInSync = false;
@@ -57,20 +56,27 @@ GetMirrorStatus(FtsResponse *response)
 
 	LWLockAcquire(SyncRepLock, LW_SHARED);
 
-	for (int i = 0; !found_mirror_sender && i < max_wal_senders; i++)
+	for (int i = 0; i < max_wal_senders; i++)
 	{
+		bool found_mirror_sender = false;
+
 		WalSnd *walsender = &WalSndCtl->walsnds[i];
 
 		SpinLockAcquire(&walsender->mutex);
 		{
 			found_mirror_sender = walsender->is_for_gp_walreceiver;
 			walsender_replica_disconnected_at = walsender->replica_disconnected_at;
-			
-			response->IsMirrorUp = is_mirror_up(walsender);
-			response->IsInSync = (response->IsMirrorUp &&
-				walsender->state == WALSNDSTATE_STREAMING);
+
+			bool is_up = is_mirror_up(walsender);
+			bool is_streaming = (walsender->state == WALSNDSTATE_STREAMING);
+
+			response->IsMirrorUp = is_up;
+			response->IsInSync = (is_up && is_streaming);
 		}
 		SpinLockRelease(&walsender->mutex);
+
+		if (found_mirror_sender)
+			break;
 	}
 
 	if (!response->IsMirrorUp)
