@@ -23,6 +23,24 @@
 /* Set at database system is ready to accept connections */
 extern pg_time_t PMAcceptingConnectionsStartTime;
 
+static bool
+is_mirror_up(WalSnd *walsender)
+{
+	bool walsender_has_pid = walsender->pid != 0;
+
+	/*
+	 * WalSndSetState() resets replica_disconnected_at for
+	 * below states. If modifying below states then be sure
+	 * to update corresponding logic in WalSndSetState() as
+	 * well.
+	 */
+	bool is_communicating_with_mirror = walsender->state == WALSNDSTATE_CATCHUP ||
+		walsender->state == WALSNDSTATE_STREAMING;
+	
+	return walsender->is_for_gp_walreceiver && walsender_has_pid
+		&& is_communicating_with_mirror;
+}
+
 /*
  * Check the WalSndCtl to obtain if mirror is up or down, if the wal sender is
  * in streaming, and if synchronous replication is enabled or not.
@@ -44,38 +62,14 @@ GetMirrorStatus(FtsResponse *response)
 		WalSnd *walsender = &WalSndCtl->walsnds[i];
 
 		SpinLockAcquire(&walsender->mutex);
-
-		if (walsender->is_for_gp_streaming_mirror)
-			found_mirror_sender = true;
-
-		bool walsender_has_pid = walsender->pid != 0;
-
-		/*
-		 * WalSndSetState() resets replica_disconnected_at for
-		 * below states. If modifying below states then be sure
-		 * to update corresponding logic in WalSndSetState() as
-		 * well.
-		 */
-		bool is_communicating_with_mirror = walsender->state == WALSNDSTATE_CATCHUP ||
-					walsender->state == WALSNDSTATE_STREAMING;
-		
-		if (walsender->is_for_gp_streaming_mirror && walsender_has_pid
-			&& is_communicating_with_mirror)
 		{
-			response->IsMirrorUp = true;
-			response->IsInSync = (walsender->state == WALSNDSTATE_STREAMING);
+			found_mirror_sender = walsender->is_for_gp_walreceiver;
+			walsender_replica_disconnected_at = walsender->replica_disconnected_at;
+			
+			response->IsMirrorUp = is_mirror_up(walsender);
+			response->IsInSync = (response->IsMirrorUp &&
+				walsender->state == WALSNDSTATE_STREAMING);
 		}
-
-		/*
-		 * If no is_for_gp_streaming_mirror WalSnd object is found, use any WalSnd
-		 * object's replica disconnection time.  This should normally
-		 * happen after startup, during the small window when mirror has
-		 * not connected yet.  After the first mirror connection, we are
-		 * guaranteed to find a WalSnd object with is_for_gp_streaming_mirror =
-		 * true.
-		 */
-		walsender_replica_disconnected_at = walsender->replica_disconnected_at;
-		
 		SpinLockRelease(&walsender->mutex);
 	}
 

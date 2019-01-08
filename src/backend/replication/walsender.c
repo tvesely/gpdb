@@ -2073,7 +2073,7 @@ InitWalSenderSlot(void)
 			/* don't need the lock anymore */
 			OwnLatch((Latch *) &walsnd->latch);
 			MyWalSnd = (WalSnd *) walsnd;
-			walsnd->is_for_gp_streaming_mirror =
+			walsnd->is_for_gp_walreceiver =
 				(strcmp(application_name, GP_WALRECEIVER_APPNAME) == 0);
 
 			break;
