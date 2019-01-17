@@ -2847,9 +2847,9 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 
 
 		/*
-		 * Select name for index unless this is attach
+		 * Select name for index if it is a partitioned table
 		 */
-		if (index->indexOid == InvalidOid)
+		if (cxt->iscreatepart || cxt->issplitpart)
 			index->idxname = ChooseIndexName(cxt->relation->relname,
 											 namespaceId,
 											 ChooseIndexColumnNames(index->indexParams),
@@ -2990,9 +2990,9 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 	}
 
 	/*
-	 * Select name for index if caller didn't specify
+	 * Select name for index if it is a partitioned table
 	 */
-	if (index->indexOid == InvalidOid)
+	if (cxt->iscreatepart || cxt->issplitpart)
 		index->idxname = ChooseIndexName(cxt->relation->relname,
 										 namespaceId,
 										 ChooseIndexColumnNames(index->indexParams),
@@ -3724,6 +3724,7 @@ transformAlterTableStmt(Oid relid, AlterTableStmt *stmt,
 	cxt.inhRelations = NIL;
 	cxt.isalter = true;
 	cxt.iscreatepart = false;
+	cxt.issplitpart = false;
 	cxt.hasoids = false;		/* need not be right */
 	cxt.columns = NIL;
 	cxt.ckconstraints = NIL;
