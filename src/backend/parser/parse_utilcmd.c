@@ -2847,14 +2847,15 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 
 
 		/*
-		 * Select name for index
+		 * Select name for index unless this is attach
 		 */
-		index->idxname = ChooseIndexName(cxt->relation->relname,
-										 namespaceId,
-										 ChooseIndexColumnNames(index->indexParams),
-										 index->excludeOpNames,
-										 index->primary,
-										 index->isconstraint);
+		if (index->indexOid == InvalidOid)
+			index->idxname = ChooseIndexName(cxt->relation->relname,
+											 namespaceId,
+											 ChooseIndexColumnNames(index->indexParams),
+											 index->excludeOpNames,
+											 index->primary,
+											 index->isconstraint);
 		return index;
 	}
 
@@ -2991,12 +2992,13 @@ transformIndexConstraint(Constraint *constraint, CreateStmtContext *cxt)
 	/*
 	 * Select name for index if caller didn't specify
 	 */
-	index->idxname = ChooseIndexName(cxt->relation->relname,
-									 namespaceId,
-									 ChooseIndexColumnNames(index->indexParams),
-									 index->excludeOpNames,
-									 index->primary,
-									 index->isconstraint);
+	if (index->indexOid == InvalidOid)
+		index->idxname = ChooseIndexName(cxt->relation->relname,
+										 namespaceId,
+										 ChooseIndexColumnNames(index->indexParams),
+										 index->excludeOpNames,
+										 index->primary,
+										 index->isconstraint);
 	return index;
 }
 
