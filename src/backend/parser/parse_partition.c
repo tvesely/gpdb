@@ -1070,10 +1070,10 @@ make_child_node(CreateStmtContext *cxt, CreateStmt *stmt, char *relname,
 	/* CREATE TABLE command for the partition */
 	cxt->alist = lappend(cxt->alist, linitial(childstmts));
 	childstmts = list_delete_first(childstmts);
-	/* And then any additional commands generated from the CREATE TABLE */
-	cxt->alist = list_concat(cxt->alist, childstmts);
 	/* ALTER TABLE goes next */
 	cxt->alist = lappend(cxt->alist, ats);
+	/* And then any additional commands generated from the CREATE TABLE */
+	cxt->alist = list_concat(cxt->alist, childstmts);
 }
 
 static List *
