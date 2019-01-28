@@ -334,6 +334,8 @@ Boot_DeclareIndexStmt:
 					DefineIndex(relationId,
 								stmt,
 								$4,
+								InvalidOid,
+								InvalidOid,
 								false,
 								false,
 								true, /* skip_build */
@@ -375,6 +377,8 @@ Boot_DeclareUniqueIndexStmt:
 					DefineIndex(relationId,
 								stmt,
 								$5,
+								InvalidOid,
+								InvalidOid,
 								false,
 								false,
 								true, /* skip_build */

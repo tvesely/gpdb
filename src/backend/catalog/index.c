@@ -60,6 +60,7 @@
 #include "nodes/nodeFuncs.h"
 #include "optimizer/clauses.h"
 #include "parser/parser.h"
+#include "rewrite/rewriteManip.h"
 #include "storage/bufmgr.h"
 #include "storage/lmgr.h"
 #include "storage/predicate.h"
@@ -718,6 +719,8 @@ Oid
 index_create(Relation heapRelation,
 			 const char *indexRelationName,
 			 Oid indexRelationId,
+			 Oid parentIndexRelid,
+			 Oid parentConstraintId,
 			 Oid relFileNode,
 			 IndexInfo *indexInfo,
 			 List *indexColNames,
@@ -735,7 +738,8 @@ index_create(Relation heapRelation,
 			 bool skip_build,
 			 bool concurrent,
 			 bool is_internal,
-			 const char *altConName)
+			 const char *altConName,
+			 Oid *constraintId)
 {
 	Oid			heapRelationId = RelationGetRelid(heapRelation);
 	Relation	pg_class;
@@ -1767,6 +1771,113 @@ BuildIndexInfo(Relation index)
 	ii->ii_BrokenHotChain = false;
 
 	return ii;
+}
+
+/*
+ * CompareIndexInfo
+ *		Return whether the properties of two indexes (in different tables)
+ *		indicate that they have the "same" definitions.
+ *
+ * Note: passing collations and opfamilies separately is a kludge.  Adding
+ * them to IndexInfo may result in better coding here and elsewhere.
+ *
+ * Use convert_tuples_by_name_map(index2, index1) to build the attmap.
+ */
+bool
+CompareIndexInfo(IndexInfo *info1, IndexInfo *info2,
+				 Oid *collations1, Oid *collations2,
+				 Oid *opfamilies1, Oid *opfamilies2,
+				 AttrNumber *attmap, int maplen)
+{
+	int		i;
+
+	if (info1->ii_Unique != info2->ii_Unique)
+		return false;
+
+	/* indexes are only equivalent if they have the same access method */
+	if (info1->ii_Am != info2->ii_Am)
+		return false;
+
+	/* and same number of attributes */
+	if (info1->ii_NumIndexAttrs != info2->ii_NumIndexAttrs)
+		return false;
+
+	/*
+	 * and columns match through the attribute map (actual attribute numbers
+	 * might differ!)  Note that this implies that index columns that are
+	 * expressions appear in the same positions.  We will next compare the
+	 * expressions themselves.
+	 */
+	for (i = 0; i < info1->ii_NumIndexAttrs; i++)
+	{
+		if (maplen < info2->ii_KeyAttrNumbers[i])
+			elog(ERROR, "incorrect attribute map");
+
+		if (attmap[info2->ii_KeyAttrNumbers[i] - 1] !=
+			info1->ii_KeyAttrNumbers[i])
+			return false;
+
+		if (collations1[i] != collations2[i])
+			return false;
+		if (opfamilies1[i] != opfamilies2[i])
+			return false;
+	}
+
+	/*
+	 * For expression indexes: either both are expression indexes, or neither
+	 * is; if they are, make sure the expressions match.
+	 */
+	if ((info1->ii_Expressions != NIL) != (info2->ii_Expressions != NIL))
+		return false;
+	if (info1->ii_Expressions != NIL)
+	{
+		bool	found_whole_row;
+		Node   *mapped;
+
+		mapped = map_variable_attnos((Node *) info2->ii_Expressions,
+									 1, 0, attmap, maplen,
+									 &found_whole_row);
+		if (found_whole_row)
+		{
+			/*
+			 * we could throw an error here, but seems out of scope for this
+			 * routine.
+			 */
+			return false;
+		}
+
+		if (!equal(info1->ii_Expressions, mapped))
+			return false;
+	}
+
+	/* Partial index predicates must be identical, if they exist */
+	if ((info1->ii_Predicate == NULL) != (info2->ii_Predicate == NULL))
+		return false;
+	if (info1->ii_Predicate != NULL)
+	{
+		bool	found_whole_row;
+		Node   *mapped;
+
+		mapped = map_variable_attnos((Node *) info2->ii_Predicate,
+									 1, 0, attmap, maplen,
+									 &found_whole_row);
+		if (found_whole_row)
+		{
+			/*
+			 * we could throw an error here, but seems out of scope for this
+			 * routine.
+			 */
+			return false;
+		}
+		if (!equal(info1->ii_Predicate, mapped))
+			return false;
+	}
+
+	/* No support currently for comparing exclusion indexes. */
+	if (info1->ii_ExclusionOps != NULL || info2->ii_ExclusionOps != NULL)
+		return false;
+
+	return true;
 }
 
 /* ----------------

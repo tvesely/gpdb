@@ -8797,6 +8797,8 @@ ATExecAddIndex(AlteredTableInfo *tab, Relation rel,
 	new_index = DefineIndex(RelationGetRelid(rel),
 							stmt,
 							InvalidOid, /* no predefined OID */
+							InvalidOid,	/* no parent index */
+							InvalidOid,	/* no parent constraint */
 							true,		/* is_alter_table */
 							check_rights,
 							skip_build,
@@ -8816,101 +8818,14 @@ ATExecAddIndex(AlteredTableInfo *tab, Relation rel,
 		index_close(irel, NoLock);
 	}
 
-	/* 
-	 * If we're the master and this is a partitioned table, cascade index
-	 * creation for all children.
-	 */
-	if (Gp_role == GP_ROLE_DISPATCH &&
-		rel_is_partitioned(RelationGetRelid(rel)))
-	{
-		List	   *children;
-		ListCell   *lc;
-		bool		prefix_match = false;
-		char	   *pname = RelationGetRelationName(rel);
-		char	   *iname = stmt->idxname;
-
-		/* is the parent relation name a prefix of the index name? */
-		if (iname && strlen(iname) > strlen(pname) &&
-			strncmp(pname, iname, strlen(pname)) == 0)
-			prefix_match = true;
-
-		children = find_all_inheritors(RelationGetRelid(rel), NoLock, NULL);
-		foreach(lc, children)
-		{
-			Oid			relid = lfirst_oid(lc);
-			Relation	crel;
-			IndexStmt *istmt;
-			AlterTableStmt *ats;
-			AlterTableCmd *atc;
-			RangeVar   *rv;
-
-			if (relid == RelationGetRelid(rel))
-				continue;
-
- 			crel = heap_open(relid, AccessShareLock);
-			istmt = copyObject(stmt);
-			istmt->is_part_child = true;
-
-			ats = makeNode(AlterTableStmt);
-			atc = makeNode(AlterTableCmd);
-
-			rv = makeRangeVar(get_namespace_name(RelationGetNamespace(rel)),
-							  get_rel_name(relid), -1);
-			istmt->relation = rv;
-			if (iname)
-			{
-				char	   *idxname;
-
-				if (prefix_match)
-				{
-					/*
-					 * If the next character in the index name is '_', absorb
-					 * it, as ChooseRelationName() will add another.
-					 */
-					int			off = 0;
-
-					if (iname[strlen(pname)] == '_')
-						off = 1;
-					idxname = ChooseRelationName(RelationGetRelationName(crel),
-												 NULL,
-												 (iname + strlen(pname) + off),
-												 RelationGetNamespace(crel));
-				}
-				else
-					idxname = ChooseRelationName(RelationGetRelationName(crel),
-												 NULL,
-												 iname,
-												 RelationGetNamespace(crel));
-				istmt->idxname = idxname;
-			}
-
-			atc->subtype = AT_AddIndex;
-			atc->def = (Node *) istmt;
-			atc->part_expanded = true;
-
-			ats->relation = copyObject(istmt->relation);
-			ats->cmds = list_make1(atc);
-			ats->relkind = OBJECT_TABLE;
-
-			heap_close(crel, AccessShareLock); /* already locked master */
-
-			ProcessUtility((Node *) ats,
-						   synthetic_sql,
-						   PROCESS_UTILITY_QUERY,
-						   NULL,
-						   None_Receiver,
-						   NULL);
-		}
-	}
-
+	/* TODO: where does this make sense? */
 	/* MPP-6929: metadata tracking */
 	if ((Gp_role == GP_ROLE_DISPATCH)
 		&& MetaTrackValidKindNsp(rel->rd_rel))
 		MetaTrackUpdObject(RelationRelationId,
 						   RelationGetRelid(rel),
 						   GetUserId(),
-						   "ALTER", "ADD INDEX"
-				);
+						   "ALTER", "ADD INDEX");
 }
 
 /*
@@ -11850,7 +11765,7 @@ ATPostAlterTypeParse(Oid oldId, Oid oldRelId, Oid refRelId, char *cmd,
 		Node	   *stmt = (Node *) lfirst(list_item);
 
 		if (IsA(stmt, IndexStmt))
-			querytree_list = list_concat(querytree_list,
+			querytree_list = lappend(querytree_list,
 									 transformIndexStmt(oldRelId,
 														(IndexStmt *) stmt,
 														cmd));
@@ -16036,7 +15951,7 @@ rel_is_parent(Oid relid)
 
 /*
  * partition children, toast tables and indexes, and indexes on partition
- * children do not long lived locks because the lock on the partition master
+ * children do not need long lived locks because the lock on the partition master
  * protects us.
  */
 bool
