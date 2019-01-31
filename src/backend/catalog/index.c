@@ -751,14 +751,7 @@ index_create(Relation heapRelation,
 	Oid			namespaceId;
 	int			i;
 	char		relpersistence;
-	bool		invalid = false; /* We always create storage in gpdb */ 
-	bool		partitioned = (flags & INDEX_CREATE_PARTITIONED) != 0;
-	char		relkind;
 
-	/* partitioned indexes must never be "built" by themselves */
-	Assert(!partitioned || (flags & INDEX_CREATE_SKIP_BUILD));
-
-	relkind = partitioned ? RELKIND_PARTITIONED_INDEX : RELKIND_INDEX;
 	is_exclusion = (indexInfo->ii_ExclusionOps != NULL);
 
 	pg_class = heap_open(RelationRelationId, RowExclusiveLock);
@@ -967,10 +960,6 @@ index_create(Relation heapRelation,
 						!deferrable,
 						!concurrent);
 
-	/* update pg_inherits, if needed */
-	if (OidIsValid(parentIndexRelid))
-		StoreSingleInheritance(indexRelationId, parentIndexRelid, 1);
-	
 	/*
 	 * Register relcache invalidation on the indexes' heap relation, to
 	 * maintain consistency of its index list
@@ -995,8 +984,6 @@ index_create(Relation heapRelation,
 	{
 		ObjectAddress myself,
 					referenced;
-		
-		Oid idx_constraint;
 
 		myself.classId = RelationRelationId;
 		myself.objectId = indexRelationId;
@@ -1038,7 +1025,7 @@ index_create(Relation heapRelation,
 				constraintType = 0;		/* keep compiler quiet */
 			}
 
-			localaddr = index_constraint_create(heapRelation,
+			index_constraint_create(heapRelation,
 									indexRelationId,
 									indexInfo,
 									constraintName,
@@ -1050,8 +1037,6 @@ index_create(Relation heapRelation,
 									false,		/* no old dependencies */
 									allow_system_table_mods,
 									is_internal);
-			if (constraintId)
-				*constraintId = localaddr.objectId;
 		}
 		else
 		{
@@ -1236,10 +1221,9 @@ index_create(Relation heapRelation,
  * allow_system_table_mods: allow table to be a system catalog
  * is_internal: index is constructed due to internal process
  */
-ObjectAddress
+void
 index_constraint_create(Relation heapRelation,
 						Oid indexRelationId,
-						Oid parentConstraintId,
 						IndexInfo *indexInfo,
 						const char *constraintName,
 						char constraintType,
@@ -1255,9 +1239,6 @@ index_constraint_create(Relation heapRelation,
 	ObjectAddress myself,
 				referenced;
 	Oid			conOid;
-	bool		islocal;
-	bool		noinherit;
-	int			inhcount;
 
 	/* constraint creation support doesn't work while bootstrapping */
 	Assert(!IsBootstrapProcessingMode());
@@ -1288,19 +1269,6 @@ index_constraint_create(Relation heapRelation,
 		deleteDependencyRecordsForClass(RelationRelationId, indexRelationId,
 										RelationRelationId, DEPENDENCY_AUTO);
 
-	if (OidIsValid(parentConstraintId))
-	{
-		islocal = false;
-		inhcount = 1;
-		noinherit = false;
-	}
-	else
-	{
-		islocal = true;
-		inhcount = 0;
-		noinherit = true;
-	}
-
 	/*
 	 * Construct a pg_constraint entry.
 	 */
@@ -1328,9 +1296,9 @@ index_constraint_create(Relation heapRelation,
 								   NULL,		/* no check constraint */
 								   NULL,
 								   NULL,
-								   islocal,
-								   inhcount,
-								   noinherit,
+								   true,		/* islocal */
+								   0,	/* inhcount */
+								   true,		/* noinherit */
 								   is_internal);
 
 	/*
@@ -1348,18 +1316,6 @@ index_constraint_create(Relation heapRelation,
 	referenced.objectSubId = 0;
 
 	recordDependencyOn(&myself, &referenced, DEPENDENCY_INTERNAL);
-
-	/*
-	 * Also, if this is a constraint on a partition, mark it as depending
-	 * on the constraint in the parent.
-	 */
-	if (OidIsValid(parentConstraintId))
-	{
-		ObjectAddress	parentConstr;
-
-		ObjectAddressSet(parentConstr, ConstraintRelationId, parentConstraintId);
-		recordDependencyOn(&referenced, &parentConstr, DEPENDENCY_INTERNAL_AUTO);
-	}
 
 	/*
 	 * If the constraint is deferrable, create the deferred uniqueness
@@ -1453,8 +1409,6 @@ index_constraint_create(Relation heapRelation,
 		heap_freetuple(indexTuple);
 		heap_close(pg_index, RowExclusiveLock);
 	}
-
-	return referenced;
 }
 
 /*
