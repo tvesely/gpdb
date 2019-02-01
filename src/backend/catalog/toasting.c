@@ -384,13 +384,14 @@ create_toast_table(Relation rel, Oid toastOid, Oid toastIndexOid,
 		toastIndexOid = GetPreassignedOidForRelation(namespaceid, toast_idxname);
 
 	toast_idxid = index_create(toast_rel, toast_idxname, toastIndexOid, InvalidOid,
+				 InvalidOid, InvalidOid,
 				 indexInfo,
 				 list_make2("chunk_id", "chunk_seq"),
 				 BTREE_AM_OID,
 				 rel->rd_rel->reltablespace,
 				 collationObjectId, classObjectId, coloptions, (Datum) 0,
 				 true, false, false, false,
-				 true, false, false, true, NULL);
+				 true, false, false, true, NULL, NULL);
 	heap_close(toast_rel, NoLock);
 
 	/*

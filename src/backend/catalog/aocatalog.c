@@ -172,13 +172,15 @@ CreateAOAuxiliaryTable(
 										 aoauxiliary_idxname,
 										 InvalidOid,
 										 InvalidOid,
+										 InvalidOid,
+										 InvalidOid,
 										 indexInfo,
 										 indexColNames,
 										 BTREE_AM_OID,
 										 rel->rd_rel->reltablespace,
 										 collationObjectId, classObjectId, coloptions, (Datum) 0,
 										 true, false, false, false,
-										 true, false, false, true, NULL);
+										 true, false, false, true, NULL, NULL);
 
 		/* Unlock target table -- no one can see it */
 		heap_close(aoauxiliary_rel, ShareLock);

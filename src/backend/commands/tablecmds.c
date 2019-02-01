@@ -1331,20 +1331,6 @@ RemoveRelations(DropStmt *drop)
 							get_rel_name(master), pretty ? pretty : "" )));
 		}
 
-		if (relkind == RELKIND_INDEX)
-		{
-			PartStatus pstat;
-
-			pstat = rel_part_status(IndexGetRelation(relOid, false));
-
-			if ( pstat == PART_STATUS_ROOT || pstat == PART_STATUS_INTERIOR )
-			{
-				ereport(WARNING,
-						(errmsg("only dropped the index \"%s\"", rel->relname),
-						 errhint("To drop other indexes on child partitions, drop each one explicitly.")));
-			}
-		}
-
 		/* OK, we're ready to delete this one */
 		obj.classId = RelationRelationId;
 		obj.objectId = relOid;
@@ -8890,6 +8876,7 @@ ATExecAddIndexConstraint(AlteredTableInfo *tab, Relation rel,
 	/* Create the catalog entries for the constraint */
 	index_constraint_create(rel,
 							index_oid,
+							InvalidOid,
 							indexInfo,
 							constraintName,
 							constraintType,

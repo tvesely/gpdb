@@ -283,6 +283,30 @@ has_subclass(Oid relationId)
 	return result;
 }
 
+/*
+ * has_superclass - does this relation inherit from another?  The caller
+ * should hold a lock on the given relation so that it can't be concurrently
+ * added to or removed from an inheritance hierarchy.
+ */
+bool
+has_superclass(Oid relationId)
+{
+	Relation	catalog;
+	SysScanDesc scan;
+	ScanKeyData skey;
+	bool		result;
+
+	catalog = heap_open(InheritsRelationId, AccessShareLock);
+	ScanKeyInit(&skey, Anum_pg_inherits_inhrelid, BTEqualStrategyNumber,
+				F_OIDEQ, ObjectIdGetDatum(relationId));
+	scan = systable_beginscan(catalog, InheritsRelidSeqnoIndexId, true,
+							  NULL, 1, &skey);
+	result = HeapTupleIsValid(systable_getnext(scan));
+	systable_endscan(scan);
+	heap_close(catalog, AccessShareLock);
+
+	return result;
+}
 
 /*
  * Given two type OIDs, determine whether the first is a complex type
@@ -387,6 +411,37 @@ typeInheritsFrom(Oid subclassTypeId, Oid superclassTypeId)
 	return result;
 }
 
+/*
+ * Create a single pg_inherits row with the given data
+ */
+void
+StoreSingleInheritance(Oid relationId, Oid parentOid, int32 seqNumber)
+{
+	Datum		values[Natts_pg_inherits];
+	bool		nulls[Natts_pg_inherits];
+	HeapTuple	tuple;
+	Relation	inhRelation;
+
+	inhRelation = heap_open(InheritsRelationId, RowExclusiveLock);
+
+	/*
+	 * Make the pg_inherits entry
+	 */
+	values[Anum_pg_inherits_inhrelid - 1] = ObjectIdGetDatum(relationId);
+	values[Anum_pg_inherits_inhparent - 1] = ObjectIdGetDatum(parentOid);
+	values[Anum_pg_inherits_inhseqno - 1] = Int32GetDatum(seqNumber);
+
+	memset(nulls, 0, sizeof(nulls));
+
+	tuple = heap_form_tuple(RelationGetDescr(inhRelation), values, nulls);
+
+	simple_heap_insert(inhRelation, tuple);
+	CatalogUpdateIndexes(inhRelation, tuple);
+
+	heap_freetuple(tuple);
+
+	heap_close(inhRelation, RowExclusiveLock);
+}
 
 /* qsort comparison function */
 static int

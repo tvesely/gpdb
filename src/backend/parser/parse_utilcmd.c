@@ -3112,6 +3112,9 @@ transformIndexStmt(Oid relid, IndexStmt *stmt, const char *queryString)
 	 * to its fields without qualification.  Caller is responsible for locking
 	 * relation, but we still need to open it.
 	 */
+	/* TODO: this was marked as a security fix in the upstream commit, find out what to do here.
+	 * rel = relation_open(relid, NoLock);
+	 */
 	rte = addRangeTableEntryForRelation(pstate, rel, NULL, false, true);
 
 	/* no to join list, yes to namespaces */

@@ -239,6 +239,8 @@ _bitmap_create_lov_heapandindex(Relation rel,
 
 	idxid = index_create(lov_heap_rel, lovIndexName, InvalidOid,
 						 InvalidOid,
+						 InvalidOid,
+						 InvalidOid,
 						 indexInfo,
 						 indexColNames,
 						 BTREE_AM_OID,
@@ -253,7 +255,7 @@ _bitmap_create_lov_heapandindex(Relation rel,
 						 /* skip_build */ false,
 						 /* concurrent */ false,
 						 /* is_internal */ true,
-						 NULL);
+						 NULL, NULL);
 	*lovIndexOid = idxid;
 
 	heap_close(lov_heap_rel, NoLock);
