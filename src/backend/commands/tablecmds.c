@@ -8781,7 +8781,6 @@ ATExecAddIndex(AlteredTableInfo *tab, Relation rel,
 	quiet = is_rebuild;
 
 	/* The IndexStmt has already been through transformIndexStmt */
-
 	new_index = DefineIndex(RelationGetRelid(rel),
 							stmt,
 							InvalidOid, /* no predefined OID */

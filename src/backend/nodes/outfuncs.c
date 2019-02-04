@@ -2688,6 +2688,8 @@ _outIndexStmt(StringInfo str, const IndexStmt *node)
 	WRITE_BOOL_FIELD(concurrent);
 	WRITE_STRING_FIELD(altconname);
 	WRITE_BOOL_FIELD(is_split_part);
+	WRITE_OID_FIELD(parentIndexId);
+	WRITE_OID_FIELD(parentConstraintId);
 }
 
 static void

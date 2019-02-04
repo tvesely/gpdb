@@ -2748,6 +2748,8 @@ typedef struct IndexStmt
 	char	   *altconname;		/* constraint name, if desired name differs
 								 * from idxname and isconstraint, else NULL. */
 	bool		is_split_part;	/* Is this for SPLIT PARTITION command? */
+	Oid			parentIndexId;	/* attach to a parent index if set */
+	Oid			parentConstraintId;		/* attach to a parent constraint if set */
 } IndexStmt;
 
 /* ----------------------

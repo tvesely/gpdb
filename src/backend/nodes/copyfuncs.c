@@ -3882,6 +3882,8 @@ _copyIndexStmt(const IndexStmt *from)
 	COPY_SCALAR_FIELD(concurrent);
 	COPY_STRING_FIELD(altconname);
 	COPY_SCALAR_FIELD(is_split_part);
+	COPY_SCALAR_FIELD(parentIndexId);
+	COPY_SCALAR_FIELD(parentConstraintId);
 
 	return newnode;
 }

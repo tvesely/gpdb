@@ -804,14 +804,14 @@ DefineIndex(Oid relationId,
 	 * index.  The caller should also decline any index build.
 	 */
 	Assert(!OidIsValid(stmt->oldNode) || (skip_build && !stmt->concurrent));
-
+	
 	/*
 	 * Make the catalog entries for the index, including constraints. Then, if
 	 * not skip_build || concurrent, actually build the index.
 	 */
 	indexRelationId =
-		index_create(rel, indexRelationName, indexRelationId, parentIndexId,
-					 parentConstraintId,
+		index_create(rel, indexRelationName, indexRelationId, stmt->parentIndexId,
+					 stmt->parentConstraintId,
 					 stmt->oldNode, indexInfo, indexColNames,
 					 accessMethodId, tablespaceId,
 					 collationObjectId, classObjectId,
@@ -1007,6 +1007,14 @@ DefineIndex(Oid relationId,
 					childStmt->relation = makeRangeVar(childnamespace_name,
 													   get_rel_name(childRelid), -1);
 					childStmt->idxname = NULL;
+					/*
+					 * GPDB: Because we need to dispatch these values to the
+					 * segments, put the parentIndexId and the
+					 * parentConstraintId in the IndexStmt. In upstream
+					 * Postgres these fields are parameters to DefineIndex.
+					 */
+					childStmt->parentIndexId = indexRelationId;
+					childStmt->parentConstraintId = createdConstraintId;
 
 					DefineIndex(childRelid, childStmt,
 								InvalidOid,			/* no predefined OID */
