@@ -435,7 +435,6 @@ DefineIndex(Oid relationId,
 	Snapshot	snapshot;
 	bool		need_longlock = true;
 	bool		shouldDispatch;
-	char	   *altconname = stmt ? stmt->altconname : NULL;
 	int			i;
 
 	if (Gp_role == GP_ROLE_DISPATCH && !IsBootstrapProcessingMode())
@@ -820,7 +819,6 @@ DefineIndex(Oid relationId,
 					 allowSystemTableMods,
 					 skip_build || stmt->concurrent,
 					 stmt->concurrent, !check_rights,
-					 altconname,
 					 &createdConstraintId);
 
 	if (shouldDispatch)

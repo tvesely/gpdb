@@ -4380,47 +4380,7 @@ ATPrepCmd(List **wqueue, Relation rel, AlterTableCmd *cmd,
 			break;
 		case AT_AddIndex:		/* ADD INDEX */
 			ATSimplePermissions(rel, ATT_TABLE);
-			ATExternalPartitionCheck(cmd->subtype, rel, recursing);
-			/*
-			 * Any recursion for partitioning is done in ATExecAddIndex()
-			 * itself However, if the index supports a PK or UNIQUE constraint
-			 * and the relation is partitioned, we need to assure the
-			 * constraint is named in a reasonable way.
-			 */
-			{
-				ConstrType contype = CONSTR_NULL; /* name picker will reject this */
-				IndexStmt *topindexstmt = (IndexStmt*)cmd->def;
-				Insist(IsA(topindexstmt, IndexStmt));
-				if (topindexstmt->isconstraint)
-				{
-					switch (rel_part_status(RelationGetRelid(rel)))
-					{
-						case PART_STATUS_ROOT:
- 							break;
- 						case PART_STATUS_INTERIOR:
- 						case PART_STATUS_LEAF:
-							/* Don't do this check for child parts (= internal requests). */
- 							if (!topindexstmt->is_part_child)
- 							{
- 								char	*what;
-
- 								if (contype == CONSTR_PRIMARY)
- 									what = pstrdup("PRIMARY KEY");
-								else
-									what = pstrdup("UNIQUE");
-
- 								ereport(ERROR,
- 										(errcode(ERRCODE_WRONG_OBJECT_TYPE),
- 										 errmsg("can't place a %s constraint on just part of partitioned table \"%s\"", 
- 												what, RelationGetRelationName(rel)),
- 										 errhint("Constrain the whole table or create a part-wise UNIQUE index instead.")));
- 							}
- 							break;
- 						default:
- 							break;
- 					}
-				}
-			}
+			/* No command-specific prep needed */
 			pass = AT_PASS_ADD_INDEX;
 			break;
 		case AT_AddConstraint:	/* ADD CONSTRAINT */
@@ -8848,9 +8808,6 @@ ATExecAddIndexConstraint(AlteredTableInfo *tab, Relation rel,
 	 * to match.
 	 */
 	constraintName = stmt->idxname;
-	if (constraintName == NULL && stmt->altconname)
-		constraintName = stmt->altconname;
-
 	if (constraintName == NULL)
 		constraintName = indexName;
 	else if (strcmp(constraintName, indexName) != 0)
@@ -19855,9 +19812,10 @@ ATPrepDropConstraint(List **wqueue, Relation rel, AlterTableCmd *cmd, bool recur
 	 * We allow operations on the root of a partitioning hierarchy, but
 	 * not ONLY the root.
 	 */
+	/* TODO: Do we need this check still? If not, we can probably drop this entire function. */
 	ATExternalPartitionCheck(cmd->subtype, rel, recursing);
-	ATPartitionCheck(cmd->subtype, rel, (!recurse && !recursing), recursing);
-
+	//ATPartitionCheck(cmd->subtype, rel, (!recurse && !recursing), recursing);
+#if 0
 	/*
 	 * If it's a UNIQUE or PRIMARY key constraint, and the table is partitioned,
 	 * also drop the constraint from the partitions. (CHECK constraints are handled
@@ -19952,6 +19910,7 @@ ATPrepDropConstraint(List **wqueue, Relation rel, AlterTableCmd *cmd, bool recur
 			}
 		}
 	}
+#endif
 }
 
 

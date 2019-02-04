@@ -739,7 +739,6 @@ index_create(Relation heapRelation,
 			 bool skip_build,
 			 bool concurrent,
 			 bool is_internal,
-			 const char *altConName,
 			 Oid *constraintId)
 {
 	Oid			heapRelationId = RelationGetRelid(heapRelation);
@@ -998,26 +997,21 @@ index_create(Relation heapRelation,
 		{
 			char		constraintType;
 			ObjectAddress localaddr;
-			const char *constraintName = indexRelationName;
 
-			if ( altConName )
-			{
-				constraintName = altConName;
-			}
 
 			/*
 			 * Let's make sure that the constraint name is unique
 			 * for this relation.
 			 */
-			Assert(constraintName);
+			Assert(indexRelationName);
 			if (ConstraintNameIsUsed(CONSTRAINT_RELATION,
 									 RelationGetRelid(heapRelation),
 									 RelationGetNamespace(heapRelation),
-									 constraintName))
+									 indexRelationName))
 				ereport(ERROR,
 						(errcode(ERRCODE_DUPLICATE_OBJECT),
 						 errmsg("constraint \"%s\" for relation \"%s\" already exists",
-								constraintName, RelationGetRelationName(heapRelation))));
+								indexRelationName, RelationGetRelationName(heapRelation))));
 
 			if (isprimary)
 				constraintType = CONSTRAINT_PRIMARY;
@@ -1035,7 +1029,7 @@ index_create(Relation heapRelation,
 									indexRelationId,
 									parentConstraintId,
 									indexInfo,
-									constraintName,
+									indexRelationName,
 									constraintType,
 									deferrable,
 									initdeferred,

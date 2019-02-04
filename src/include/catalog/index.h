@@ -69,7 +69,6 @@ extern Oid index_create(Relation heapRelation,
 			 bool skip_build,
 			 bool concurrent,
 			 bool is_internal,
-			 const char *altConName,
 			 Oid *constraintId);
 
 extern ObjectAddress index_constraint_create(Relation heapRelation,
