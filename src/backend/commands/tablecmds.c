@@ -13959,17 +13959,16 @@ MergeConstraintsIntoExisting(Relation child_rel, Relation parent_rel)
  * exactly the same way.
  */
 static void
-ATExecDropInherit(Relation rel, RangeVar *parent, LOCKMODE lockmode, bool is_partition)
+ATExecDropInherit(Relation child_rel, RangeVar *parent, LOCKMODE lockmode, bool is_partition)
 {
 	Relation	parent_rel;
 	Relation	catalogRelation;
 	SysScanDesc scan;
 	ScanKeyData key[3];
-	HeapTuple	inheritsTuple,
-				attributeTuple,
+	HeapTuple	attributeTuple,
 				constraintTuple;
 	List	   *connames;
-	bool		found = false;
+	bool		found;
 
 	/*
 	 * AccessShareLock on the parent is probably enough, seeing that DROP
@@ -13978,45 +13977,23 @@ ATExecDropInherit(Relation rel, RangeVar *parent, LOCKMODE lockmode, bool is_par
 	 */
 	parent_rel = heap_openrv(parent, AccessShareLock);
 
-	/*
-	 * We don't bother to check ownership of the parent table --- ownership of
-	 * the child is presumed enough rights.
-	 */
-
-	/*
-	 * Find and destroy the pg_inherits entry linking the two, or error out if
-	 * there is none.
-	 */
-	catalogRelation = heap_open(InheritsRelationId, RowExclusiveLock);
-	ScanKeyInit(&key[0],
-				Anum_pg_inherits_inhrelid,
-				BTEqualStrategyNumber, F_OIDEQ,
-				ObjectIdGetDatum(RelationGetRelid(rel)));
-	scan = systable_beginscan(catalogRelation, InheritsRelidSeqnoIndexId,
-							  true, NULL, 1, key);
-
-	while (HeapTupleIsValid(inheritsTuple = systable_getnext(scan)))
-	{
-		Oid			inhparent;
-
-		inhparent = ((Form_pg_inherits) GETSTRUCT(inheritsTuple))->inhparent;
-		if (inhparent == RelationGetRelid(parent_rel))
-		{
-			simple_heap_delete(catalogRelation, &inheritsTuple->t_self);
-			found = true;
-			break;
-		}
-	}
-
-	systable_endscan(scan);
-	heap_close(catalogRelation, RowExclusiveLock);
-
+	found = DeleteInheritsTuple(RelationGetRelid(child_rel),
+								RelationGetRelid(parent_rel));
 	if (!found)
-		ereport(ERROR,
-				(errcode(ERRCODE_UNDEFINED_TABLE),
-				 errmsg("relation \"%s\" is not a parent of relation \"%s\"",
-						RelationGetRelationName(parent_rel),
-						RelationGetRelationName(rel))));
+	{
+		if (is_partition)
+			ereport(ERROR,
+					(errcode(ERRCODE_UNDEFINED_TABLE),
+					 errmsg("relation \"%s\" is not a partition of relation \"%s\"",
+							RelationGetRelationName(child_rel),
+							RelationGetRelationName(parent_rel))));
+		else
+			ereport(ERROR,
+					(errcode(ERRCODE_UNDEFINED_TABLE),
+					 errmsg("relation \"%s\" is not a parent of relation \"%s\"",
+							RelationGetRelationName(parent_rel),
+							RelationGetRelationName(child_rel))));
+	}
 
 	/*
 	 * Search through child columns looking for ones matching parent rel
@@ -14025,7 +14002,7 @@ ATExecDropInherit(Relation rel, RangeVar *parent, LOCKMODE lockmode, bool is_par
 	ScanKeyInit(&key[0],
 				Anum_pg_attribute_attrelid,
 				BTEqualStrategyNumber, F_OIDEQ,
-				ObjectIdGetDatum(RelationGetRelid(rel)));
+				ObjectIdGetDatum(RelationGetRelid(child_rel)));
 	scan = systable_beginscan(catalogRelation, AttributeRelidNumIndexId,
 							  true, NULL, 1, key);
 	while (HeapTupleIsValid(attributeTuple = systable_getnext(scan)))
@@ -14087,7 +14064,7 @@ ATExecDropInherit(Relation rel, RangeVar *parent, LOCKMODE lockmode, bool is_par
 	ScanKeyInit(&key[0],
 				Anum_pg_constraint_conrelid,
 				BTEqualStrategyNumber, F_OIDEQ,
-				ObjectIdGetDatum(RelationGetRelid(rel)));
+				ObjectIdGetDatum(RelationGetRelid(child_rel)));
 	scan = systable_beginscan(catalogRelation, ConstraintRelidIndexId,
 							  true, NULL, 1, key);
 
@@ -14118,7 +14095,7 @@ ATExecDropInherit(Relation rel, RangeVar *parent, LOCKMODE lockmode, bool is_par
 
 			if (copy_con->coninhcount <= 0)		/* shouldn't happen */
 				elog(ERROR, "relation %u has non-inherited constraint \"%s\"",
-					 RelationGetRelid(rel), NameStr(copy_con->conname));
+					 RelationGetRelid(child_rel), NameStr(copy_con->conname));
 
 			copy_con->coninhcount--;
 			if (copy_con->coninhcount == 0)
@@ -14133,7 +14110,7 @@ ATExecDropInherit(Relation rel, RangeVar *parent, LOCKMODE lockmode, bool is_par
 	systable_endscan(scan);
 	heap_close(catalogRelation, RowExclusiveLock);
 
-	drop_parent_dependency(RelationGetRelid(rel),
+	drop_parent_dependency(RelationGetRelid(child_rel),
 						   RelationRelationId,
 						   RelationGetRelid(parent_rel),
 						   is_partition);
@@ -14144,7 +14121,7 @@ ATExecDropInherit(Relation rel, RangeVar *parent, LOCKMODE lockmode, bool is_par
 	 * auxiliary_id argument.
 	 */
 	InvokeObjectPostAlterHookArg(InheritsRelationId,
-								 RelationGetRelid(rel), 0,
+								 RelationGetRelid(child_rel), 0,
 								 RelationGetRelid(parent_rel), false);
 
 	/* keep our lock on the parent relation until commit */
@@ -14152,9 +14129,9 @@ ATExecDropInherit(Relation rel, RangeVar *parent, LOCKMODE lockmode, bool is_par
 
 	/* MPP-6929: metadata tracking */
 	if ((Gp_role == GP_ROLE_DISPATCH)
-		&& MetaTrackValidKindNsp(rel->rd_rel))
+		&& MetaTrackValidKindNsp(child_rel->rd_rel))
 		MetaTrackUpdObject(RelationRelationId,
-						   RelationGetRelid(rel),
+						   RelationGetRelid(child_rel),
 						   GetUserId(),
 						   "ALTER", "NO INHERIT"
 				);

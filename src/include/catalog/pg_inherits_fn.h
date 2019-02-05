@@ -25,5 +25,6 @@ extern bool has_superclass(Oid relationId);
 extern bool typeInheritsFrom(Oid subclassTypeId, Oid superclassTypeId);
 extern void StoreSingleInheritance(Oid relationId, Oid parentOid,
 								   int32 seqNumber);
+extern bool DeleteInheritsTuple(Oid inhrelid, Oid inhparent);
 
 #endif   /* PG_INHERITS_FN_H */
