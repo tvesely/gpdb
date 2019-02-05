@@ -151,6 +151,7 @@ transformCreateStmt(CreateStmt *stmt, const char *queryString, bool createPartit
 	CreateStmtContext cxt;
 	List	   *result;
 	List	   *save_alist;
+	List	   *save_index_list;
 	ListCell   *elements;
 	Oid			namespaceid;
 	Oid			existing_relid;
@@ -340,7 +341,13 @@ transformCreateStmt(CreateStmt *stmt, const char *queryString, bool createPartit
 	/*
 	 * Postprocess constraints that give rise to index definitions.
 	 */
-	transformIndexConstraints(&cxt, stmt->is_add_part || stmt->is_split_part);
+	if ((stmt->partitionBy == NULL && !stmt->is_part_child) || (stmt->partitionBy && !stmt->is_part_child))
+		transformIndexConstraints(&cxt, stmt->is_add_part || stmt->is_split_part);
+	/*
+	 * Partitioned tables should create the indexes after all its children have been created 
+	 */
+	save_index_list = cxt.alist;
+	cxt.alist = NIL;
 
 	/*
 	 * Carry any deferred analysis statements forward.  Added for MPP-13750
@@ -463,6 +470,7 @@ transformCreateStmt(CreateStmt *stmt, const char *queryString, bool createPartit
 	result = lappend(cxt.blist, stmt);
 	result = list_concat(result, cxt.alist);
 	result = list_concat(result, save_alist);
+	result = list_concat(result, save_index_list);
 
 	MemoryContextDelete(cxt.tempCtx);
 
