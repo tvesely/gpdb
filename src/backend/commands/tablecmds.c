@@ -19798,7 +19798,7 @@ AtEOSubXact_on_commit_actions(bool isCommit, SubTransactionId mySubid,
 static void
 ATPrepDropConstraint(List **wqueue, Relation rel, AlterTableCmd *cmd, bool recurse, bool recursing)
 {
-	char	   *constrName = cmd->name;
+//	char	   *constrName = cmd->name;
 
 	/*
 	 * This command never recurses, but the offered relation may be partitioned,
@@ -19814,7 +19814,7 @@ ATPrepDropConstraint(List **wqueue, Relation rel, AlterTableCmd *cmd, bool recur
 	 */
 	/* TODO: Do we need this check still? If not, we can probably drop this entire function. */
 	ATExternalPartitionCheck(cmd->subtype, rel, recursing);
-	//ATPartitionCheck(cmd->subtype, rel, (!recurse && !recursing), recursing);
+	ATPartitionCheck(cmd->subtype, rel, (!recurse && !recursing), recursing);
 #if 0
 	/*
 	 * If it's a UNIQUE or PRIMARY key constraint, and the table is partitioned,

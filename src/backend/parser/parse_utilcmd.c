@@ -151,7 +151,7 @@ transformCreateStmt(CreateStmt *stmt, const char *queryString, bool createPartit
 	CreateStmtContext cxt;
 	List	   *result;
 	List	   *save_alist;
-	List	   *save_index_list;
+	List	   *save_root_partition_alist = NIL;
 	ListCell   *elements;
 	Oid			namespaceid;
 	Oid			existing_relid;
@@ -341,13 +341,8 @@ transformCreateStmt(CreateStmt *stmt, const char *queryString, bool createPartit
 	/*
 	 * Postprocess constraints that give rise to index definitions.
 	 */
-	if ((stmt->partitionBy == NULL && !stmt->is_part_child) || (stmt->partitionBy && !stmt->is_part_child))
+	if ((stmt->partitionBy == NULL && !stmt->is_part_child) || (stmt->partitionBy && !stmt->is_part_child) || stmt->is_split_part || stmt->is_add_part)
 		transformIndexConstraints(&cxt, stmt->is_add_part || stmt->is_split_part);
-	/*
-	 * Partitioned tables should create the indexes after all its children have been created 
-	 */
-	save_index_list = cxt.alist;
-	cxt.alist = NIL;
 
 	/*
 	 * Carry any deferred analysis statements forward.  Added for MPP-13750
@@ -456,6 +451,14 @@ transformCreateStmt(CreateStmt *stmt, const char *queryString, bool createPartit
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("PARTITION BY clause cannot be used with DISTRIBUTED REPLICATED clause")));
+
+
+	if ((stmt->partitionBy == NULL && !stmt->is_part_child) || (stmt->partitionBy && !stmt->is_part_child))
+	{
+		save_root_partition_alist = cxt.alist;
+		cxt.alist = NIL;
+	}
+
 	/*
 	 * Process table partitioning clause
 	 */
@@ -469,8 +472,9 @@ transformCreateStmt(CreateStmt *stmt, const char *queryString, bool createPartit
 
 	result = lappend(cxt.blist, stmt);
 	result = list_concat(result, cxt.alist);
+	if ((stmt->partitionBy == NULL && !stmt->is_part_child) || (stmt->partitionBy && !stmt->is_part_child))
+		result = list_concat(result, save_root_partition_alist);
 	result = list_concat(result, save_alist);
-	result = list_concat(result, save_index_list);
 
 	MemoryContextDelete(cxt.tempCtx);
 
@@ -1212,7 +1216,7 @@ generateClonedIndexStmt(CreateStmtContext *cxt, Relation source_idx,
 	List	   *indexprs;
 	ListCell   *indexpr_item;
 	Oid			indrelid;
-	Oid			constraintId;
+	Oid			constraintId = InvalidOid;
 	int			keyno;
 	Oid			keycoltype;
 	Datum		datum;
@@ -1351,6 +1355,16 @@ generateClonedIndexStmt(CreateStmtContext *cxt, Relation source_idx,
 	}
 	else
 		index->isconstraint = false;
+
+	/*
+	 * GPDB: If we are splitting a partition, or creating a new child
+ 	 * partition, set the parents of the relation in the index statement.
+	 */
+	if (cxt->issplitpart || cxt->iscreatepart)
+	{
+		index->parentIndexId = source_relid;
+		index->parentConstraintId = constraintId;
+	}
 
 	/* Get the index expressions, if any */
 	datum = SysCacheGetAttr(INDEXRELID, ht_idx,
