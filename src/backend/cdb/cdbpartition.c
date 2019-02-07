@@ -947,7 +947,7 @@ cdb_exchange_part_constraints(Relation table,
 			 * candidate (missing) and occurrences that must be dropped from
 			 * the candidate (extra).
 			 */
-			constraint_diffs(entry->table_cons, entry->cand_cons, true, &missing, &extra);
+			constraint_diffs(entry->table_cons, entry->cand_cons, false, &missing, &extra);
 			missing_constraints = list_concat(missing_constraints, missing);
 			excess_constraints = list_concat(excess_constraints, extra);
 		}
