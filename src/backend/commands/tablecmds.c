@@ -433,7 +433,7 @@ static void ATExecEnableDisableRule(Relation rel, char *rulename,
 						char fires_when, LOCKMODE lockmode);
 static void ATPrepAddInherit(Relation child_rel);
 static void ATExecAddInherit(Relation child_rel, Node *node, LOCKMODE lockmode);
-static void ATExecDropInherit(Relation rel, RangeVar *parent, LOCKMODE lockmode, bool is_partition);
+static void ATExecDropInherit(Relation rel, RangeVar *parent, LOCKMODE lockmode);
 static void drop_parent_dependency(Oid relid, Oid refclassid, Oid refobjid, bool is_partition);
 static void ATExecAddOf(Relation rel, const TypeName *ofTypename, LOCKMODE lockmode);
 static void ATExecDropOf(Relation rel, LOCKMODE lockmode);
@@ -448,7 +448,7 @@ static void RangeVarCallbackForDropRelation(const RangeVar *rel, Oid relOid,
 								Oid oldRelOid, void *arg);
 static void RangeVarCallbackForAlterRelation(const RangeVar *rv, Oid relid,
 								 Oid oldrelid, void *arg);
-
+static void RemoveInheritance(Relation child_rel, Relation parent_rel, bool is_partition);
 static void ATExecExpandTable(List **wqueue, Relation rel, AlterTableCmd *cmd);
 
 static void ATExecSetDistributedBy(Relation rel, Node *node,
@@ -5547,7 +5547,7 @@ ATExecCmd(List **wqueue, AlteredTableInfo *tab, Relation *rel_p,
 			ATExecAddInherit(rel, (Node *) cmd->def, lockmode);
 			break;
 		case AT_DropInherit:
-			ATExecDropInherit(rel, (RangeVar *) cmd->def, lockmode, false);
+			ATExecDropInherit(rel, (RangeVar *) cmd->def, lockmode);
 			break;
 		case AT_AddOf:
 			ATExecAddOf(rel, (TypeName *) cmd->def, lockmode);
@@ -13902,6 +13902,44 @@ MergeConstraintsIntoExisting(Relation child_rel, Relation parent_rel)
 /*
  * ALTER TABLE NO INHERIT
  *
+ * Return value is the address of the relation that is no longer parent.
+ */
+static void
+ATExecDropInherit(Relation rel, RangeVar *parent, LOCKMODE lockmode)
+{
+	Relation	parent_rel;
+
+	/*
+	 * AccessShareLock on the parent is probably enough, seeing that DROP
+	 * TABLE doesn't lock parent tables at all.  We need some lock since we'll
+	 * be inspecting the parent's schema.
+	 */
+	parent_rel = heap_openrv(parent, AccessShareLock);
+
+	/*
+	 * We don't bother to check ownership of the parent table --- ownership of
+	 * the child is presumed enough rights.
+	 */
+
+	/* Off to RemoveInheritance() where most of the work happens */
+	RemoveInheritance(rel, parent_rel, false);
+
+	/* keep our lock on the parent relation until commit */
+	heap_close(parent_rel, NoLock);
+
+	/* MPP-6929: metadata tracking */
+	if ((Gp_role == GP_ROLE_DISPATCH)
+		&& MetaTrackValidKindNsp(rel->rd_rel))
+		MetaTrackUpdObject(RelationRelationId,
+						   RelationGetRelid(rel),
+						   GetUserId(),
+						   "ALTER", "NO INHERIT"
+		);
+}
+
+/*
+ * RemoveInheritance
+ *
  * Drop a parent from the child's parents. This just adjusts the attinhcount
  * and attislocal of the columns and removes the pg_inherit and pg_depend
  * entries.
@@ -13914,11 +13952,12 @@ MergeConstraintsIntoExisting(Relation child_rel, Relation parent_rel)
  *
  * coninhcount and conislocal for inherited constraints are adjusted in
  * exactly the same way.
+ *
+ * Common to ATExecDropInherit() and ATExecDetachPartition().
  */
 static void
-ATExecDropInherit(Relation child_rel, RangeVar *parent, LOCKMODE lockmode, bool is_partition)
+RemoveInheritance(Relation child_rel, Relation parent_rel, bool is_partition)
 {
-	Relation	parent_rel;
 	Relation	catalogRelation;
 	SysScanDesc scan;
 	ScanKeyData key[3];
@@ -13927,12 +13966,6 @@ ATExecDropInherit(Relation child_rel, RangeVar *parent, LOCKMODE lockmode, bool 
 	List	   *connames;
 	bool		found;
 
-	/*
-	 * AccessShareLock on the parent is probably enough, seeing that DROP
-	 * TABLE doesn't lock parent tables at all.  We need some lock since we'll
-	 * be inspecting the parent's schema.
-	 */
-	parent_rel = heap_openrv(parent, AccessShareLock);
 
 	found = DeleteInheritsTuple(RelationGetRelid(child_rel),
 								RelationGetRelid(parent_rel));
@@ -14081,17 +14114,6 @@ ATExecDropInherit(Relation child_rel, RangeVar *parent, LOCKMODE lockmode, bool 
 								 RelationGetRelid(child_rel), 0,
 								 RelationGetRelid(parent_rel), false);
 
-	/* keep our lock on the parent relation until commit */
-	heap_close(parent_rel, NoLock);
-
-	/* MPP-6929: metadata tracking */
-	if ((Gp_role == GP_ROLE_DISPATCH)
-		&& MetaTrackValidKindNsp(child_rel->rd_rel))
-		MetaTrackUpdObject(RelationRelationId,
-						   RelationGetRelid(child_rel),
-						   GetUserId(),
-						   "ALTER", "NO INHERIT"
-				);
 }
 
 /*
@@ -16676,11 +16698,8 @@ exchange_part_inheritance(Oid oldrelid, Oid newrelid)
 	heap_close(catalogRelation, AccessShareLock);
 
 	parent = heap_open(parentid, AccessShareLock); /* should be enough */
-	ATExecDropInherit(oldrel,
-			makeRangeVar(get_namespace_name(parent->rd_rel->relnamespace),
-					     RelationGetRelationName(parent), -1),
-					  AccessExclusiveLock, /* Not used for anything in ATExecDropInherit() */
-					  true);
+
+	RemoveInheritance(oldrel, parent, true);
 
 	inherit_parent(parent, newrel, true /* it's a partition */, NIL);
 	heap_close(parent, NoLock);
