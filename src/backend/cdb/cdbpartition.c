@@ -67,7 +67,6 @@
 typedef struct
 {
 	char	   *key;
-	List	   *table_cons;
 	List	   *part_cons;
 	List	   *cand_cons;
 } ConstraintEntry;
@@ -80,7 +79,6 @@ typedef struct
 
 typedef enum
 {
-	PART_TABLE,
 	PART_PART,
 	PART_CAND
 } PartExchangeRole;
@@ -90,8 +88,7 @@ static void record_constraints(Relation pgcon, MemoryContext context,
 
 static char *constraint_names(List *cons);
 
-static void
-			constraint_diffs(List *cons_a, List *cons_b, bool match_names, List **missing, List **extra);
+static void constraint_diffs(List *cons_a, List *cons_b, List **missing, List **extra);
 
 static void add_template_encoding_clauses(Oid relid, Oid paroid, List *stenc);
 
@@ -747,7 +744,6 @@ record_constraints(Relation pgcon,
 				   PartExchangeRole xrole)
 {
 	HeapTuple	tuple;
-	Relation	conRel;
 	Oid			conid;
 	char	   *condef;
 	ConstraintEntry *entry;
@@ -756,12 +752,10 @@ record_constraints(Relation pgcon,
 	ScanKeyData scankey;
 	SysScanDesc sscan;
 
-	conRel = heap_open(ConstraintRelationId, AccessShareLock);
-
 	ScanKeyInit(&scankey, Anum_pg_constraint_conrelid,
 				BTEqualStrategyNumber, F_OIDEQ,
 				ObjectIdGetDatum(RelationGetRelid(rel)));
-	sscan = systable_beginscan(conRel, ConstraintRelidIndexId, true,
+	sscan = systable_beginscan(pgcon, ConstraintRelidIndexId, true,
 							   NULL, 1, &scankey);
 
 	/* For each constraint on rel: */
@@ -784,17 +778,12 @@ record_constraints(Relation pgcon,
 		if (!found)
 		{
 			entry->key = condef;
-			entry->table_cons = NIL;
 			entry->part_cons = NIL;
 			entry->cand_cons = NIL;
 		}
 		tuple = heap_copytuple(tuple);
 		switch (xrole)
 		{
-			case PART_TABLE:
-				entry->table_cons = sorted_insert_list(
-													   entry->table_cons, tuple);
-				break;
 			case PART_PART:
 				entry->part_cons = sorted_insert_list(
 													  entry->part_cons, tuple);
@@ -810,12 +799,14 @@ record_constraints(Relation pgcon,
 		MemoryContextSwitchTo(oldcontext);
 	}
 	systable_endscan(sscan);
-	heap_close(conRel, AccessShareLock);
 }
 
-/* Subroutine of ATPExecPartExchange used to swap constraints on existing
- * part and candidate part.  Note that this runs on both the QD and QEs
- * so must not assume availability of partition catalogs.
+/* Subroutine of ATPExecPartExchange used to swap constraints on existing part
+ * and candidate part. Throw an error if the existing constraints do not match
+ * the incoming candidate partition constraints. This function also identifies
+ * the CHECK constraints on the partition being exchanged, and adds them to the
+ * incoming candidate.  Note that this runs on both the QD and QEs so must not
+ * assume availability of partition catalogs.
  *
  * table -- open relation of the parent partitioned table
  * part -- open relation of existing part to exchange
@@ -888,7 +879,6 @@ cdb_exchange_part_constraints(Relation table,
 	MemoryContextSwitchTo(oldcontext);
 
 	/* Find and record constraints on the players. */
-	record_constraints(pgcon, context, hash_tbl, table, PART_TABLE);
 	record_constraints(pgcon, context, hash_tbl, part, PART_PART);
 	record_constraints(pgcon, context, hash_tbl, cand, PART_CAND);
 	hash_freeze(hash_tbl);
@@ -904,55 +894,54 @@ cdb_exchange_part_constraints(Relation table,
 	hash_seq_init(&hash_seq, hash_tbl);
 	while ((entry = hash_seq_search(&hash_seq)))
 	{
-		if (list_length(entry->table_cons) > 0)
+		if (list_length(entry->part_cons) > 0) /* and none on whole */
 		{
+
 			/*
-			 * REGULAR CONSTRAINT
+			 * First, check for inherited rules. Catch all constraints that are inherited
+			 * and check them against the list of constraints that match in the incoming
+			 * relation.
 			 *
-			 * Constraints on the whole partitioned table are regular (in the
-			 * sense that they do not enforce partitioning rules and
-			 * corresponding constraints must occur on every part).
+			 * Constraints that are inherited will never be check constraints.
 			 */
+			ListCell *lc;
+			List *inherited_rules = NIL;
 
-			List	   *missing = NIL;
-			List	   *extra = NIL;
-
-			if (list_length(entry->part_cons) == 0)
+			foreach(lc, entry->part_cons)
 			{
-				/*
-				 * The regular constraint is missing from the existing part,
-				 * so there is a database anomaly.  Warn rather than issuing
-				 * an error, because this may be an attempt to use EXCHANGE to
-				 * correct the problem.  There may be multiple constraints
-				 * with different names, but report only the first name since
-				 * the constraint expression itself is all that matters.
-				 */
-				tuple = linitial(entry->table_cons);
-				con = (Form_pg_constraint) GETSTRUCT(tuple);
 
-				ereport(WARNING,
-						(errcode(ERRCODE_WARNING),
-						 errmsg("ignoring inconsistency: \"%s\" has no constraint corresponding to \"%s\" on \"%s\"",
-								RelationGetRelationName(part),
-								NameStr(con->conname),
-								RelationGetRelationName(table))));
+				HeapTuple	tuple = (HeapTuple) lfirst(lc);
+				Form_pg_constraint constraint = (Form_pg_constraint) GETSTRUCT(tuple);
+
+				if (constraint->connoinherit == false && constraint->conislocal == false && constraint->coninhcount > 0)
+				{
+					Assert(constraint->contype != CONSTRAINT_CHECK);
+					inherited_rules = lappend(inherited_rules, tuple);
+				}
 			}
 
 			/*
-			 * The regular constraint should ultimately appear on the
-			 * candidate part the same number of times and with the same name
-			 * as it appears on the partitioned table. The call to
-			 * constraint_diff will find matching names and we'll be left with
-			 * occurrences of the constraint that must be added to the
-			 * candidate (missing) and occurrences that must be dropped from
-			 * the candidate (extra).
+			 * If we found inherited rules, but not all of the existing constraints matching this
+			 * definition are inherited, we have a dangling constraint
 			 */
-			constraint_diffs(entry->table_cons, entry->cand_cons, false, &missing, &extra);
-			missing_constraints = list_concat(missing_constraints, missing);
-			excess_constraints = list_concat(excess_constraints, extra);
-		}
-		else if (list_length(entry->part_cons) > 0) /* and none on whole */
-		{
+			if (inherited_rules != NIL && list_length(inherited_rules) != list_length(entry->part_cons))
+			{
+				elog(ERROR,
+					 "invalid partition constraint on \"%s\"",
+					 RelationGetRelationName(part));
+			}
+
+			if (list_length(inherited_rules) > 0)
+			{
+				List	   *missing = NIL;
+				List	   *extra = NIL;
+
+				constraint_diffs(inherited_rules, entry->cand_cons, &missing, &extra);
+				missing_constraints = list_concat(missing_constraints, missing);
+				excess_constraints = list_concat(excess_constraints, extra);
+				continue;
+			}
+
 			/*
 			 * PARTITION CONSTRAINT
 			 *
@@ -1027,7 +1016,7 @@ cdb_exchange_part_constraints(Relation table,
 				List	   *missing = NIL;
 				List	   *extra = NIL;
 
-				constraint_diffs(entry->part_cons, entry->cand_cons, false, &missing, &extra);
+				constraint_diffs(entry->part_cons, entry->cand_cons, &missing, &extra);
 
 				if (list_length(missing) == 0)
 				{
@@ -1107,7 +1096,7 @@ cdb_exchange_part_constraints(Relation table,
 			Form_pg_constraint mcon = (Form_pg_constraint) GETSTRUCT(missing_part_constraint);
 
 			if (mcon->contype != CONSTRAINT_CHECK)
-				elog(ERROR, "Invalid partition constration, not CHECK type");
+				elog(ERROR, "Invalid partition constraint, not CHECK type");
 
 			map_part_attrs(part, cand, &map, TRUE);
 			nc = constraint_apply_mapped(missing_part_constraint, map, cand,
@@ -1207,7 +1196,7 @@ constraint_names(List *cons)
  * the other list.
  */
 static void
-constraint_diffs(List *cons_a, List *cons_b, bool match_names, List **missing, List **extra)
+constraint_diffs(List *cons_a, List *cons_b, List **missing, List **extra)
 {
 	ListCell   *cell_a,
 			   *cell_b;
@@ -1245,38 +1234,11 @@ constraint_diffs(List *cons_a, List *cons_b, bool match_names, List **missing, L
 	for (pos_b = 0; pos_b < len_b; pos_b++)
 		match_b[pos_b] = -1;
 
-	pos_b = 0;
-	foreach(cell_b, cons_b)
-	{
-		HeapTuple	tuple_b = (HeapTuple) lfirst(cell_b);
-		Form_pg_constraint b = (Form_pg_constraint) GETSTRUCT(tuple_b);
-
-
-		pos_a = 0;
-		foreach(cell_a, cons_a)
-		{
-			HeapTuple	tuple_a = lfirst(cell_a);
-			Form_pg_constraint a = (Form_pg_constraint) GETSTRUCT(tuple_a);
-
-			if (strncmp(NameStr(a->conname), NameStr(b->conname), NAMEDATALEN) == 0)
-			{
-				/* No duplicate names on either list. */
-				Assert(match_a[pos_a] == -1 && match_b[pos_b] == -1);
-
-				match_b[pos_b] = pos_a;
-				match_a[pos_a] = pos_b;
-				break;
-			}
-			pos_a++;
-		}
-		pos_b++;
-	}
-
 	*missing = NIL;
 	*extra = NIL;
 
 	n = len_a - len_b;
-	if (n > 0 || match_names)
+	if (n > 0)
 	{
 		pos_a = 0;
 		foreach(cell_a, cons_a)
@@ -1285,13 +1247,13 @@ constraint_diffs(List *cons_a, List *cons_b, bool match_names, List **missing, L
 				*missing = lappend(*missing, lfirst(cell_a));
 			pos_a++;
 			n--;
-			if (n <= 0 && !match_names)
+			if (n <= 0)
 				break;
 		}
 	}
 
 	n = len_b - len_a;
-	if (n > 0 || match_names)
+	if (n > 0)
 	{
 		pos_b = 0;
 		foreach(cell_b, cons_b)
@@ -1300,7 +1262,7 @@ constraint_diffs(List *cons_a, List *cons_b, bool match_names, List **missing, L
 				*extra = lappend(*extra, lfirst(cell_b));
 			pos_b++;
 			n--;
-			if (n <= 0 && !match_names)
+			if (n <= 0)
 				break;
 		}
 	}
