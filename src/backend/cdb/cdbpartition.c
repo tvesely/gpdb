@@ -838,6 +838,7 @@ cdb_exchange_part_constraints(Relation table,
 	List	   *excess_constraints = NIL;
 	List	   *missing_constraints = NIL;
 	List	   *missing_part_constraints = NIL;
+	List	   *matching_constraints = NIL;
 	List	   *validation_list = NIL;
 	int			delta_checks = 0;
 
@@ -894,19 +895,19 @@ cdb_exchange_part_constraints(Relation table,
 	hash_seq_init(&hash_seq, hash_tbl);
 	while ((entry = hash_seq_search(&hash_seq)))
 	{
-		if (list_length(entry->part_cons) > 0) /* and none on whole */
+		if (list_length(entry->part_cons) > 0)	/* and none on whole */
 		{
 
 			/*
-			 * First, check for inherited rules. Catch all constraints that are inherited
-			 * and check them against the list of constraints that match in the incoming
-			 * relation.
+			 * First, check for inherited rules. Catch all constraints that
+			 * are inherited and check them against the list of constraints
+			 * that match in the incoming relation.
 			 *
 			 * Constraints that are inherited will never be check constraints.
 			 */
-			ListCell *lc;
-			List *inherited_constraints = NIL;
-			List *partition_constraints = NIL;
+			ListCell   *lc;
+			List	   *inherited_constraints = NIL;
+			List	   *partition_constraints = NIL;
 
 			foreach(lc, entry->part_cons)
 			{
@@ -915,7 +916,8 @@ cdb_exchange_part_constraints(Relation table,
 				Form_pg_constraint constraint = (Form_pg_constraint) GETSTRUCT(tuple);
 
 				/*
-				 * The constraint has a parent, so we inherited it from the parent partition
+				 * The constraint has a parent, so we inherited it from the
+				 * parent partition
 				 */
 				if (constraint->connoinherit == false && constraint->conislocal == false && constraint->coninhcount > 0)
 				{
@@ -931,8 +933,9 @@ cdb_exchange_part_constraints(Relation table,
 			if (list_length(partition_constraints) > 0)
 			{
 				/*
-				 * If we found inherited rules, but not all of the existing constraints matching this
-				 * definition are inherited, we have a dangling constraint
+				 * If we found inherited rules, but not all of the existing
+				 * constraints matching this definition are inherited, we have
+				 * a dangling constraint
 				 */
 				if (list_length(inherited_constraints) > 0)
 				{
@@ -940,24 +943,25 @@ cdb_exchange_part_constraints(Relation table,
 						 "invalid partition constraint on \"%s\"",
 						 RelationGetRelationName(part));
 				}
-				
+
 				/*
 				 * PARTITION CONSTRAINT
 				 *
 				 * Constraints on the part and not the whole must guard a
 				 * partition rule, so they must be CHECK constraints on
 				 * partitioning columns. They are managed internally, so there
-				 * must be only one of them. (Though a part will have a partition
-				 * constraint for each partition level, a given constraint should
-				 * appear only once per part.)
+				 * must be only one of them. (Though a part will have a
+				 * partition constraint for each partition level, a given
+				 * constraint should appear only once per part.)
 				 *
-				 * They should either already occur on the candidate or be added.
-				 * Partition constraint names are not carefully managed so they
-				 * shouldn't be regarded as meaningful.
+				 * They should either already occur on the candidate or be
+				 * added. Partition constraint names are not carefully managed
+				 * so they shouldn't be regarded as meaningful.
 				 *
-				 * Since we use the partition constraint of the part to check or
-				 * construct the partition constraint of the candidate, we insist
-				 * it is in good working order, and issue an error, if not.
+				 * Since we use the partition constraint of the part to check
+				 * or construct the partition constraint of the candidate, we
+				 * insist it is in good working order, and issue an error, if
+				 * not.
 				 */
 				int			n = list_length(entry->part_cons);
 
@@ -975,9 +979,9 @@ cdb_exchange_part_constraints(Relation table,
 				con = (Form_pg_constraint) GETSTRUCT(tuple);
 
 				/*
-				 * Check it, though this is cursory in that we don't check that
-				 * the right attributes are involved and that the semantics are
-				 * right.
+				 * Check it, though this is cursory in that we don't check
+				 * that the right attributes are involved and that the
+				 * semantics are right.
 				 */
 				if (con->contype != CONSTRAINT_CHECK)
 				{
@@ -991,8 +995,8 @@ cdb_exchange_part_constraints(Relation table,
 				if (n == 0)
 				{
 					/*
-					 * The partition constraint is missing from the candidate and
-					 * must be added.
+					 * The partition constraint is missing from the candidate
+					 * and must be added.
 					 */
 					missing_part_constraints = lappend(missing_part_constraints,
 													   (HeapTuple) linitial(entry->part_cons));
@@ -1008,9 +1012,9 @@ cdb_exchange_part_constraints(Relation table,
 				else
 				{
 					/*
-					 * Several instances of the partition constraint exist on the
-					 * candidate. If one has a matching name, prefer it. Else,
-					 * just chose the first (arbitrary).
+					 * Several instances of the partition constraint exist on
+					 * the candidate. If one has a matching name, prefer it.
+					 * Else, just chose the first (arbitrary).
 					 */
 					List	   *missing = NIL;
 					List	   *extra = NIL;
@@ -1021,7 +1025,7 @@ cdb_exchange_part_constraints(Relation table,
 					{
 						excess_constraints = list_concat(excess_constraints, extra);
 					}
-					else			/* missing */
+					else		/* missing */
 					{
 						ListCell   *lc;
 						bool		skip = TRUE;
@@ -1042,18 +1046,31 @@ cdb_exchange_part_constraints(Relation table,
 					}
 				}
 			}
-			
+
 
 			if (list_length(inherited_constraints) > 0)
 			{
 				List	   *missing = NIL;
 				List	   *extra = NIL;
+
 				Assert(list_length(partition_constraints) == 0);
 
-				constraint_diffs(inherited_constraints, entry->cand_cons, &missing, &extra);
+				constraint_diffs(entry->part_cons, entry->cand_cons, &missing, &extra);
 				missing_constraints = list_concat(missing_constraints, missing);
 				excess_constraints = list_concat(excess_constraints, extra);
+
+				/*
+				 * Pop off any constraints that were added to either missing
+				 * or extra. What remains are the matching constraint pairs
+				 * that need to exchange their inheritance.
+				 */
+
+				entry->part_cons = list_difference(entry->part_cons, missing);
+				entry->cand_cons = list_difference(entry->cand_cons, extra);
+				if (list_length(entry->part_cons) > 0 && list_length(entry->cand_cons) > 0)
+					matching_constraints = lappend(matching_constraints, entry);
 			}
+
 
 		}
 		else if (list_length(entry->cand_cons) > 0) /* and none on whole or
@@ -1147,6 +1164,32 @@ cdb_exchange_part_constraints(Relation table,
 		}
 	}
 
+	if (matching_constraints)
+	{
+		ListCell   *lcentry;
+
+		foreach(lcentry, matching_constraints)
+		{
+			ListCell   *lcpart;
+			ListCell   *lccand;
+
+			entry = (ConstraintEntry *) lfirst(lcentry);
+
+			forboth(lcpart, entry->part_cons, lccand, entry->cand_cons)
+			{
+				HeapTuple	parttuple = (HeapTuple) lfirst(lcpart);
+				Form_pg_constraint part_constraint = (Form_pg_constraint) GETSTRUCT(parttuple);
+
+				HeapTuple	candtuple = (HeapTuple) lfirst(lccand);
+				Form_pg_constraint cand_constraint = (Form_pg_constraint) GETSTRUCT(candtuple);
+
+				elog(WARNING, "Exchanging inheritance for %s and %s", NameStr(part_constraint->conname),
+					 NameStr(cand_constraint->conname));
+			}
+		}
+	}
+
+
 	if (delta_checks)
 	{
 		SetRelationNumChecks(cand, cand->rd_rel->relchecks + delta_checks);
@@ -1215,8 +1258,6 @@ constraint_diffs(List *cons_a, List *cons_b, List **missing, List **extra)
 			   *cell_b;
 	Index		pos_a,
 				pos_b;
-	int		   *match_a,
-			   *match_b;
 	int			n;
 
 	int			len_a = list_length(cons_a);
@@ -1239,13 +1280,6 @@ constraint_diffs(List *cons_a, List *cons_b, List **missing, List **extra)
 		return;
 	}
 
-	match_a = (int *) palloc(len_a * sizeof(int));
-	for (pos_a = 0; pos_a < len_a; pos_a++)
-		match_a[pos_a] = -1;
-
-	match_b = (int *) palloc(len_b * sizeof(int));
-	for (pos_b = 0; pos_b < len_b; pos_b++)
-		match_b[pos_b] = -1;
 
 	*missing = NIL;
 	*extra = NIL;
@@ -1256,8 +1290,7 @@ constraint_diffs(List *cons_a, List *cons_b, List **missing, List **extra)
 		pos_a = 0;
 		foreach(cell_a, cons_a)
 		{
-			if (match_a[pos_a] == -1)
-				*missing = lappend(*missing, lfirst(cell_a));
+			*missing = lappend(*missing, lfirst(cell_a));
 			pos_a++;
 			n--;
 			if (n <= 0)
@@ -1271,17 +1304,13 @@ constraint_diffs(List *cons_a, List *cons_b, List **missing, List **extra)
 		pos_b = 0;
 		foreach(cell_b, cons_b)
 		{
-			if (match_b[pos_b] == -1)
-				*extra = lappend(*extra, lfirst(cell_b));
+			*extra = lappend(*extra, lfirst(cell_b));
 			pos_b++;
 			n--;
 			if (n <= 0)
 				break;
 		}
 	}
-
-	pfree(match_a);
-	pfree(match_b);
 }
 
 /*
