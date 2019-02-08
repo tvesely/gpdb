@@ -905,7 +905,8 @@ cdb_exchange_part_constraints(Relation table,
 			 * Constraints that are inherited will never be check constraints.
 			 */
 			ListCell *lc;
-			List *inherited_rules = NIL;
+			List *inherited_constraints = NIL;
+			List *partition_constraints = NIL;
 
 			foreach(lc, entry->part_cons)
 			{
@@ -913,135 +914,147 @@ cdb_exchange_part_constraints(Relation table,
 				HeapTuple	tuple = (HeapTuple) lfirst(lc);
 				Form_pg_constraint constraint = (Form_pg_constraint) GETSTRUCT(tuple);
 
+				/*
+				 * The constraint has a parent, so we inherited it from the parent partition
+				 */
 				if (constraint->connoinherit == false && constraint->conislocal == false && constraint->coninhcount > 0)
 				{
 					Assert(constraint->contype != CONSTRAINT_CHECK);
-					inherited_rules = lappend(inherited_rules, tuple);
+					inherited_constraints = lappend(inherited_constraints, tuple);
+				}
+				else
+				{
+					partition_constraints = lappend(partition_constraints, tuple);
 				}
 			}
 
-			/*
-			 * If we found inherited rules, but not all of the existing constraints matching this
-			 * definition are inherited, we have a dangling constraint
-			 */
-			if (inherited_rules != NIL && list_length(inherited_rules) != list_length(entry->part_cons))
-			{
-				elog(ERROR,
-					 "invalid partition constraint on \"%s\"",
-					 RelationGetRelationName(part));
-			}
-
-			if (list_length(inherited_rules) > 0)
-			{
-				List	   *missing = NIL;
-				List	   *extra = NIL;
-
-				constraint_diffs(inherited_rules, entry->cand_cons, &missing, &extra);
-				missing_constraints = list_concat(missing_constraints, missing);
-				excess_constraints = list_concat(excess_constraints, extra);
-				continue;
-			}
-
-			/*
-			 * PARTITION CONSTRAINT
-			 *
-			 * Constraints on the part and not the whole must guard a
-			 * partition rule, so they must be CHECK constraints on
-			 * partitioning columns. They are managed internally, so there
-			 * must be only one of them. (Though a part will have a partition
-			 * constraint for each partition level, a given constraint should
-			 * appear only once per part.)
-			 *
-			 * They should either already occur on the candidate or be added.
-			 * Partition constraint names are not carefully managed so they
-			 * shouldn't be regarded as meaningful.
-			 *
-			 * Since we use the partition constraint of the part to check or
-			 * construct the partition constraint of the candidate, we insist
-			 * it is in good working order, and issue an error, if not.
-			 */
-			int			n = list_length(entry->part_cons);
-
-			if (n > 1)
-			{
-				elog(ERROR,
-					 "multiple partition constraints (same key) on \"%s\"",
-					 RelationGetRelationName(part));
-			}
-
-			/*
-			 * Get the model partition constraint.
-			 */
-			tuple = linitial(entry->part_cons);
-			con = (Form_pg_constraint) GETSTRUCT(tuple);
-
-			/*
-			 * Check it, though this is cursory in that we don't check that
-			 * the right attributes are involved and that the semantics are
-			 * right.
-			 */
-			if (con->contype != CONSTRAINT_CHECK)
-			{
-				elog(ERROR,
-					 "invalid partition constraint on \"%s\"",
-					 RelationGetRelationName(part));
-			}
-
-			n = list_length(entry->cand_cons);
-
-			if (n == 0)
+			if (list_length(partition_constraints) > 0)
 			{
 				/*
-				 * The partition constraint is missing from the candidate and
-				 * must be added.
+				 * If we found inherited rules, but not all of the existing constraints matching this
+				 * definition are inherited, we have a dangling constraint
 				 */
-				missing_part_constraints = lappend(missing_part_constraints,
-												   (HeapTuple) linitial(entry->part_cons));
-			}
-			else if (n == 1)
-			{
-				/*
-				 * One instance of the partition constraint exists on the
-				 * candidate, so let's not worry about name drift.  All is
-				 * well.
-				 */
-			}
-			else
-			{
-				/*
-				 * Several instances of the partition constraint exist on the
-				 * candidate. If one has a matching name, prefer it. Else,
-				 * just chose the first (arbitrary).
-				 */
-				List	   *missing = NIL;
-				List	   *extra = NIL;
-
-				constraint_diffs(entry->part_cons, entry->cand_cons, &missing, &extra);
-
-				if (list_length(missing) == 0)
+				if (list_length(inherited_constraints) > 0)
 				{
-					excess_constraints = list_concat(excess_constraints, extra);
+					elog(ERROR,
+						 "invalid partition constraint on \"%s\"",
+						 RelationGetRelationName(part));
 				}
-				else			/* missing */
-				{
-					ListCell   *lc;
-					bool		skip = TRUE;
+				
+				/*
+				 * PARTITION CONSTRAINT
+				 *
+				 * Constraints on the part and not the whole must guard a
+				 * partition rule, so they must be CHECK constraints on
+				 * partitioning columns. They are managed internally, so there
+				 * must be only one of them. (Though a part will have a partition
+				 * constraint for each partition level, a given constraint should
+				 * appear only once per part.)
+				 *
+				 * They should either already occur on the candidate or be added.
+				 * Partition constraint names are not carefully managed so they
+				 * shouldn't be regarded as meaningful.
+				 *
+				 * Since we use the partition constraint of the part to check or
+				 * construct the partition constraint of the candidate, we insist
+				 * it is in good working order, and issue an error, if not.
+				 */
+				int			n = list_length(entry->part_cons);
 
-					foreach(lc, entry->cand_cons)
+				if (n > 1)
+				{
+					elog(ERROR,
+						 "multiple partition constraints (same key) on \"%s\"",
+						 RelationGetRelationName(part));
+				}
+
+				/*
+				 * Get the model partition constraint.
+				 */
+				tuple = linitial(entry->part_cons);
+				con = (Form_pg_constraint) GETSTRUCT(tuple);
+
+				/*
+				 * Check it, though this is cursory in that we don't check that
+				 * the right attributes are involved and that the semantics are
+				 * right.
+				 */
+				if (con->contype != CONSTRAINT_CHECK)
+				{
+					elog(ERROR,
+						 "invalid partition constraint on \"%s\"",
+						 RelationGetRelationName(part));
+				}
+
+				n = list_length(entry->cand_cons);
+
+				if (n == 0)
+				{
+					/*
+					 * The partition constraint is missing from the candidate and
+					 * must be added.
+					 */
+					missing_part_constraints = lappend(missing_part_constraints,
+													   (HeapTuple) linitial(entry->part_cons));
+				}
+				else if (n == 1)
+				{
+					/*
+					 * One instance of the partition constraint exists on the
+					 * candidate, so let's not worry about name drift.  All is
+					 * well.
+					 */
+				}
+				else
+				{
+					/*
+					 * Several instances of the partition constraint exist on the
+					 * candidate. If one has a matching name, prefer it. Else,
+					 * just chose the first (arbitrary).
+					 */
+					List	   *missing = NIL;
+					List	   *extra = NIL;
+
+					constraint_diffs(entry->part_cons, entry->cand_cons, &missing, &extra);
+
+					if (list_length(missing) == 0)
 					{
-						HeapTuple	tuple = (HeapTuple) lfirst(lc);
+						excess_constraints = list_concat(excess_constraints, extra);
+					}
+					else			/* missing */
+					{
+						ListCell   *lc;
+						bool		skip = TRUE;
 
-						if (skip)
+						foreach(lc, entry->cand_cons)
 						{
-							skip = FALSE;
-						}
-						else
-						{
-							excess_constraints = lappend(excess_constraints, tuple);
+							HeapTuple	tuple = (HeapTuple) lfirst(lc);
+
+							if (skip)
+							{
+								skip = FALSE;
+							}
+							else
+							{
+								excess_constraints = lappend(excess_constraints, tuple);
+							}
 						}
 					}
 				}
 			}
+			
+
+			if (list_length(inherited_constraints) > 0)
+			{
+				List	   *missing = NIL;
+				List	   *extra = NIL;
+				Assert(list_length(partition_constraints) == 0);
+
+				constraint_diffs(inherited_constraints, entry->cand_cons, &missing, &extra);
+				missing_constraints = list_concat(missing_constraints, missing);
+				excess_constraints = list_concat(excess_constraints, extra);
+			}
+
 		}
 		else if (list_length(entry->cand_cons) > 0) /* and none on whole or
 													 * part */
