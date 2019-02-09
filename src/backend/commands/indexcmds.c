@@ -1033,7 +1033,6 @@ DefineIndex(Oid relationId,
 				Relation	pg_index = heap_open(IndexRelationId, RowExclusiveLock);
 				HeapTuple	tup,
 							newtup;
-				CatalogIndexState indstate;
 
 				tup = SearchSysCache1(INDEXRELID,
 									  ObjectIdGetDatum(indexRelationId));
@@ -1043,12 +1042,8 @@ DefineIndex(Oid relationId,
 				newtup = heap_copytuple(tup);
 				((Form_pg_index) GETSTRUCT(newtup))->indisvalid = false;
 				
-				indstate = CatalogOpenIndexes(pg_index);
-				
 				simple_heap_update(pg_index, &tuple->t_self, newtup);
-				
-				CatalogIndexInsert(indstate, newtup);
-				CatalogCloseIndexes(indstate);
+				CatalogUpdateIndexes(pg_index, newtup);
 
 				ReleaseSysCache(tup);
 				heap_close(pg_index, RowExclusiveLock);

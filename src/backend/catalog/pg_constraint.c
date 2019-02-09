@@ -787,13 +787,12 @@ AlterConstraintNamespaces(Oid ownerId, Oid oldNspId,
 void
 ConstraintSetParentConstraint(Oid childConstrId, Oid parentConstrId)
 {
-	Relation		constrRel;
+	Relation	constrRel;
 	Form_pg_constraint constrForm;
-	HeapTuple		tuple,
-			newtup;
-	ObjectAddress	depender;
-	ObjectAddress	referenced;
-	CatalogIndexState indstate;
+	HeapTuple	tuple,
+				newtup;
+	ObjectAddress depender;
+	ObjectAddress referenced;
 
 	constrRel = heap_open(ConstraintRelationId, RowExclusiveLock);
 	tuple = SearchSysCache1(CONSTROID, ObjectIdGetDatum(childConstrId));
@@ -801,23 +800,38 @@ ConstraintSetParentConstraint(Oid childConstrId, Oid parentConstrId)
 		elog(ERROR, "cache lookup failed for constraint %u", childConstrId);
 	newtup = heap_copytuple(tuple);
 	constrForm = (Form_pg_constraint) GETSTRUCT(newtup);
-	constrForm->conislocal = false;
-	constrForm->coninhcount++;
+	if (OidIsValid(parentConstrId))
+	{
+		/* don't allow setting parent for a constraint that already has one */
+		Assert(constrForm->coninhcount == 0);
 
-	indstate = CatalogOpenIndexes(constrRel);
+		constrForm->conislocal = false;
+		constrForm->coninhcount++;
 
-	simple_heap_update(constrRel, &tuple->t_self, newtup);
+		simple_heap_update(constrRel, &tuple->t_self, newtup);
+		CatalogUpdateIndexes(constrRel, newtup);
 
-	CatalogIndexInsert(indstate, newtup);
-	CatalogCloseIndexes(indstate);
+		ObjectAddressSet(referenced, ConstraintRelationId, parentConstrId);
+		ObjectAddressSet(depender, ConstraintRelationId, childConstrId);
 
+		recordDependencyOn(&depender, &referenced, DEPENDENCY_INTERNAL_AUTO);
+	}
+	else
+	{
+		constrForm->coninhcount--;
+		constrForm->conislocal = true;
+
+		/* Make sure there's no further inheritance. */
+		Assert(constrForm->coninhcount == 0);
+
+		deleteDependencyRecordsForClass(ConstraintRelationId, childConstrId,
+										ConstraintRelationId,
+										DEPENDENCY_INTERNAL_AUTO);
+		simple_heap_update(constrRel, &tuple->t_self, newtup);
+		CatalogUpdateIndexes(constrRel, newtup);
+	}
+	
 	ReleaseSysCache(tuple);
-
-	ObjectAddressSet(referenced, ConstraintRelationId, parentConstrId);
-	ObjectAddressSet(depender, ConstraintRelationId, childConstrId);
-
-	recordDependencyOn(&depender, &referenced, DEPENDENCY_INTERNAL_AUTO);
-
 	heap_close(constrRel, RowExclusiveLock);
 }
 
