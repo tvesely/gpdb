@@ -20444,6 +20444,7 @@ ATExecDetachPartitionInheritance(Relation rel, RangeVar *name)
 	{
 		Oid			idxid = lfirst_oid(cell);
 		Relation	idx;
+		Oid			constrOid;
 
 		if (!has_superclass(idxid))
 			continue;
@@ -20453,7 +20454,14 @@ ATExecDetachPartitionInheritance(Relation rel, RangeVar *name)
 
 		idx = index_open(idxid, AccessExclusiveLock);
 		IndexSetParentIndex(idx, InvalidOid);
-		relation_close(idx, AccessExclusiveLock);
+
+		/* If there's a constraint associated with the index, detach it too */
+		constrOid = get_relation_idx_constraint_oid(RelationGetRelid(partRel),
+													idxid);
+		if (OidIsValid(constrOid))
+			ConstraintSetParentConstraint(constrOid, InvalidOid);
+
+		index_close(idx, NoLock);
 	}
 
 	/*
