@@ -19824,7 +19824,10 @@ AtEOSubXact_on_commit_actions(bool isCommit, SubTransactionId mySubid,
 static void
 ATPrepDropConstraint(List **wqueue, Relation rel, AlterTableCmd *cmd, bool recurse, bool recursing)
 {
-//	char	   *constrName = cmd->name;
+	HeapTuple	tuple;
+	ScanKeyData scankey;
+	SysScanDesc sscan;
+	Relation	pgcon;
 
 	/*
 	 * This command never recurses, but the offered relation may be partitioned,
@@ -19838,105 +19841,36 @@ ATPrepDropConstraint(List **wqueue, Relation rel, AlterTableCmd *cmd, bool recur
 	 * We allow operations on the root of a partitioning hierarchy, but
 	 * not ONLY the root.
 	 */
-	/* TODO: Do we need this check still? If not, we can probably drop this entire function. */
 	ATExternalPartitionCheck(cmd->subtype, rel, recursing);
-	//ATPartitionCheck(cmd->subtype, rel, (!recurse && !recursing), recursing);
-#if 0
+
 	/*
-	 * If it's a UNIQUE or PRIMARY key constraint, and the table is partitioned,
-	 * also drop the constraint from the partitions. (CHECK constraints are handled
-	 * differently, by the normal constraint inheritance mechanism.)
+	 * Don't allow check constraints on partitions to be dropped. Scan pg_constraint
+	 * to find the constraint that we are dropping.
+	 * TODO: Something tells me that we can do better than to do it this way.
 	 */
-	if (Gp_role == GP_ROLE_DISPATCH && rel_is_partitioned(RelationGetRelid(rel)))
+	pgcon = heap_open(ConstraintRelationId, AccessShareLock);
+
+	ScanKeyInit(&scankey, Anum_pg_constraint_conrelid,
+				BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(RelationGetRelid(rel)));
+	sscan = systable_beginscan(pgcon, ConstraintRelidIndexId, true,
+							   NULL, 1, &scankey);
+
+	while (HeapTupleIsValid(tuple = systable_getnext(sscan)))
 	{
-		List		*children;
-		ListCell	*lchild;
-		DestReceiver *dest = None_Receiver;
-		bool		is_unique_or_primary_key = false;
-		Relation	conrel;
-		Form_pg_constraint con;
-		SysScanDesc scan;
-		ScanKeyData key;
-		HeapTuple	tuple;
 
-		/* Is it UNIQUE or PRIMARY KEY constraint? */
-		conrel = heap_open(ConstraintRelationId, RowExclusiveLock);
-
-		/*
-		 * Find the target constraint
-		 */
-		ScanKeyInit(&key,
-					Anum_pg_constraint_conrelid,
-					BTEqualStrategyNumber, F_OIDEQ,
-					ObjectIdGetDatum(RelationGetRelid(rel)));
-		scan = systable_beginscan(conrel, ConstraintRelidIndexId,
-								  true, NULL, 1, &key);
-
-		while (HeapTupleIsValid(tuple = systable_getnext(scan)))
+		Form_pg_constraint constraint = (Form_pg_constraint) GETSTRUCT(tuple);
+		if (namestrcmp(&constraint->conname, cmd->name) == 0)
 		{
-			con = (Form_pg_constraint) GETSTRUCT(tuple);
+			if (constraint->contype == CONSTRAINT_CHECK)
+				ATPartitionCheck(cmd->subtype, rel, (!recurse && !recursing), recursing);
 
-			if (strcmp(NameStr(con->conname), constrName) == 0)
-			{
-				if (con->contype == CONSTRAINT_PRIMARY ||
-					con->contype == CONSTRAINT_UNIQUE)
-					is_unique_or_primary_key = true;
-
-				break;
-			}
-		}
-
-		/*
-		 * If we don't find the constraint, assume it's not a UNIQUE or
-		 * PRIMARY KEY. We'll throw an error later, in the execution
-		 * phase.
-		 */
-		systable_endscan(scan);
-		heap_close(conrel, RowExclusiveLock);
-
-		if (is_unique_or_primary_key)
-		{
-			children = find_inheritance_children(RelationGetRelid(rel), NoLock);
-
-			foreach(lchild, children)
-			{
-				Oid 			childrelid = lfirst_oid(lchild);
-				Relation 		childrel;
-
-				RangeVar 		*rv;
-				AlterTableCmd 	*atc;
-				AlterTableStmt 	*ats;
-
-				if (childrelid == RelationGetRelid(rel))
-					continue;
-
-				childrel = heap_open(childrelid, AccessShareLock);
-				CheckTableNotInUse(childrel, "ALTER TABLE");
-
-				/* Recurse to child */
-				atc = copyObject(cmd);
-				atc->subtype = AT_DropConstraintRecurse;
-
-				rv = makeRangeVar(get_namespace_name(RelationGetNamespace(childrel)),
-								  get_rel_name(childrelid), -1);
-
-				ats = makeNode(AlterTableStmt);
-				ats->relation = rv;
-				ats->cmds = list_make1(atc);
-				ats->relkind = OBJECT_TABLE;
-
-				heap_close(childrel, NoLock);
-
-				ProcessUtility((Node *)ats,
-							   synthetic_sql,
-							   PROCESS_UTILITY_SUBCOMMAND,
-							   NULL,
-							   dest,
-							   NULL);
-			}
+			break;
 		}
 	}
-#endif
+
+	systable_endscan(sscan);
+	heap_close(pgcon, AccessShareLock);
 }
 
 
