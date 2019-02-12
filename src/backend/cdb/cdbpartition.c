@@ -985,6 +985,9 @@ cdb_exchange_part_constraints(Relation table,
 				 */
 				if (con->contype != CONSTRAINT_CHECK)
 				{
+					// TODO: We throw this error when the incoming table does not have the correct
+					//  matching constraint- we should instead be giving a helpful error message 
+					//  saying what constraint needs to be added to the incoming table
 					elog(ERROR,
 						 "invalid partition constraint on \"%s\"",
 						 RelationGetRelationName(part));
