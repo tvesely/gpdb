@@ -1177,6 +1177,8 @@ cdb_exchange_part_constraints(Relation table,
 
 			forboth(lcpart, entry->part_cons, lccand, entry->cand_cons)
 			{
+				Relation partIndex;
+				Relation parentIndex;
 				HeapTuple	parttuple = (HeapTuple) lfirst(lcpart);
 				Form_pg_constraint part_constraint = (Form_pg_constraint) GETSTRUCT(parttuple);
 
@@ -1185,6 +1187,71 @@ cdb_exchange_part_constraints(Relation table,
 
 				elog(WARNING, "Exchanging inheritance for %s and %s", NameStr(part_constraint->conname),
 					 NameStr(cand_constraint->conname));
+				
+				// TODO: what lock level do we need here?
+				parentIndex = index_open(rel_partition_get_root(part_constraint->conindid), AccessShareLock);
+				partIndex = index_open(cand_constraint->conindid, AccessShareLock);
+				
+				ATExecAttachPartitionIdx(NULL, parentIndex,
+											makeRangeVar(get_namespace_name(partIndex->rd_rel->relnamespace),
+														 RelationGetRelationName(partIndex), -1),
+											true);
+				/* temporary name */
+				snprintf(tmpname, NAMEDATALEN, "pg_temp_exchange_%u_%i", part_constraint->conindid, MyBackendId);
+
+				namecpy(&part_constraint_name, &part_constraint->conname);
+				namecpy(&cand_constraint_name, &cand_constraint->conname);
+
+				/*
+				 * Rename the partition constraint to the temp name
+				 */
+				renamestmt = makeNode(RenameStmt);
+				renamestmt->renameType = OBJECT_CONSTRAINT;
+				renamestmt->relationType = OBJECT_TABLE;
+				renamestmt->relation = makeRangeVar(get_namespace_name(part->rd_rel->relnamespace),
+													RelationGetRelationName(part), -1);
+				renamestmt->subname = NameStr(part_constraint->conname);
+				renamestmt->newname = tmpname;
+				renamestmt->behavior = DROP_RESTRICT;
+
+				RenameConstraint(renamestmt);
+
+				CommandCounterIncrement();
+
+				/*
+				 * Rename the incoming constraint to the part_constraint name
+				 */
+				renamestmt = makeNode(RenameStmt);
+				renamestmt->renameType = OBJECT_CONSTRAINT;
+				renamestmt->relationType = OBJECT_TABLE;
+				renamestmt->relation = makeRangeVar(get_namespace_name(cand->rd_rel->relnamespace),
+													RelationGetRelationName(cand), -1);
+				renamestmt->subname = NameStr(cand_constraint->conname);
+				renamestmt->newname = NameStr(part_constraint->conname);
+				renamestmt->behavior = DROP_RESTRICT;
+
+				RenameConstraint(renamestmt);
+
+				CommandCounterIncrement();
+				/*
+				 * Finally, rename the part_constraint to the original cand_constraint name
+				 */
+				renamestmt = makeNode(RenameStmt);
+				renamestmt->renameType = OBJECT_CONSTRAINT;
+				renamestmt->relationType = OBJECT_TABLE;
+				renamestmt->relation = makeRangeVar(get_namespace_name(part->rd_rel->relnamespace),
+													RelationGetRelationName(part), -1);
+				renamestmt->subname = tmpname;
+				renamestmt->newname = NameStr(cand_constraint->conname);
+				renamestmt->behavior = DROP_RESTRICT;
+
+				RenameConstraint(renamestmt);
+
+				CommandCounterIncrement();
+				
+				// TODO: Should we drop locks here?
+				index_close(partIndex, NoLock);
+				index_close(parentIndex, NoLock);
 			}
 		}
 	}
