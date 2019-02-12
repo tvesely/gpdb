@@ -1179,13 +1179,18 @@ cdb_exchange_part_constraints(Relation table,
 			{
 				Relation partIndex;
 				Relation parentIndex;
+				char		tmpname[NAMEDATALEN];
+				NameData	part_constraint_name;
+				NameData	cand_constraint_name;
+				RenameStmt *renamestmt;
+
 				HeapTuple	parttuple = (HeapTuple) lfirst(lcpart);
 				Form_pg_constraint part_constraint = (Form_pg_constraint) GETSTRUCT(parttuple);
 
 				HeapTuple	candtuple = (HeapTuple) lfirst(lccand);
 				Form_pg_constraint cand_constraint = (Form_pg_constraint) GETSTRUCT(candtuple);
 
-				elog(WARNING, "Exchanging inheritance for %s and %s", NameStr(part_constraint->conname),
+				elog(DEBUG1, "Exchanging inheritance for %s and %s", NameStr(part_constraint->conname),
 					 NameStr(cand_constraint->conname));
 				
 				// TODO: what lock level do we need here?
