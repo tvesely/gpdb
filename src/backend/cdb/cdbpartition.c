@@ -875,6 +875,8 @@ cdb_exchange_part_constraints(Relation table,
 	 * that these maps are inverse to the usual table-to-part maps.
 	 */
 	oldcontext = MemoryContextSwitchTo(context);
+	// TODO: DefineIndex has an upstream version of this(map_variable_attnos).
+	//  Should we be using that instead, or do we want to make DefineIndex use ours?
 	map_part_attrs(part, table, &p2t, TRUE);
 	map_part_attrs(cand, table, &c2t, TRUE);
 	MemoryContextSwitchTo(oldcontext);
@@ -895,6 +897,8 @@ cdb_exchange_part_constraints(Relation table,
 	hash_seq_init(&hash_seq, hash_tbl);
 	while ((entry = hash_seq_search(&hash_seq)))
 	{
+		// TODO: bring back comments that were removed here
+		// TODO: bring back the table_cons stuff here so that we can compare all constraints against the parent table
 		if (list_length(entry->part_cons) > 0)	/* and none on whole */
 		{
 
@@ -918,6 +922,8 @@ cdb_exchange_part_constraints(Relation table,
 				/*
 				 * The constraint has a parent, so we inherited it from the
 				 * parent partition
+				 *
+				 * TODO: Should this use something similar to has_superclass?
 				 */
 				if (constraint->connoinherit == false && constraint->conislocal == false && constraint->coninhcount > 0)
 				{
@@ -1200,6 +1206,7 @@ cdb_exchange_part_constraints(Relation table,
 				parentIndex = index_open(rel_partition_get_root(part_constraint->conindid), AccessShareLock);
 				partIndex = index_open(cand_constraint->conindid, AccessShareLock);
 				
+				// TODO: We need to use processUtility here instead
 				ATExecAttachPartitionIdx(NULL, parentIndex,
 											makeRangeVar(get_namespace_name(partIndex->rd_rel->relnamespace),
 														 RelationGetRelationName(partIndex), -1),
@@ -1222,6 +1229,7 @@ cdb_exchange_part_constraints(Relation table,
 				renamestmt->newname = tmpname;
 				renamestmt->behavior = DROP_RESTRICT;
 
+				// TODO: We need to use processUtility here instead
 				RenameConstraint(renamestmt);
 
 				CommandCounterIncrement();
@@ -1238,6 +1246,7 @@ cdb_exchange_part_constraints(Relation table,
 				renamestmt->newname = NameStr(part_constraint->conname);
 				renamestmt->behavior = DROP_RESTRICT;
 
+				// TODO: We need to use processUtility here instead
 				RenameConstraint(renamestmt);
 
 				CommandCounterIncrement();
@@ -1253,6 +1262,7 @@ cdb_exchange_part_constraints(Relation table,
 				renamestmt->newname = NameStr(cand_constraint->conname);
 				renamestmt->behavior = DROP_RESTRICT;
 
+				// TODO: We need to use processUtility here instead
 				RenameConstraint(renamestmt);
 
 				CommandCounterIncrement();

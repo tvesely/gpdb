@@ -315,8 +315,10 @@ convert_tuples_by_name(TupleDesc indesc,
 /*
  * Return a palloc'd bare attribute map for tuple conversion, matching input
  * and output columns by name.  (Dropped columns are ignored in both input and
- * output.)  This is normally a subroutine for convert_tuples_by_name, but can
- * be used standalone.
+ * output.)
+ *
+ * GPDB: This is was split out as a subroutine for convert_tuples_by_name in
+ * Postgres 10 to make backporting of partitoned indexes easier.
  */
 AttrNumber *
 convert_tuples_by_name_map(TupleDesc indesc,
