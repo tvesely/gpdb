@@ -1206,11 +1206,12 @@ cdb_exchange_part_constraints(Relation table,
 				parentIndex = index_open(rel_partition_get_root(part_constraint->conindid), AccessShareLock);
 				partIndex = index_open(cand_constraint->conindid, AccessShareLock);
 				
+				AlterPartitionId *alterpartId = makeNode(AlterPartitionId);
+				alterpartId->idtype = AT_AP_IDRangeVar;
+				alterpartId->partiddef = (Node*) makeRangeVar(get_namespace_name(partIndex->rd_rel->relnamespace),
+															  RelationGetRelationName(partIndex), -1);
 				// TODO: We need to use processUtility here instead
-				ATExecAttachPartitionIdx(NULL, parentIndex,
-											makeRangeVar(get_namespace_name(partIndex->rd_rel->relnamespace),
-														 RelationGetRelationName(partIndex), -1),
-											true);
+				ATExecAttachPartitionIdx(NULL, parentIndex, alterpartId, true);
 				/* temporary name */
 				snprintf(tmpname, NAMEDATALEN, "pg_temp_exchange_%u_%i", part_constraint->conindid, MyBackendId);
 

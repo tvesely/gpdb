@@ -4048,6 +4048,7 @@ AlterTableGetLockLevel(List *cmds)
 			case AT_PartSplit:
 			case AT_PartTruncate:
 			case AT_PartAddInternal:
+			case AT_PartAttachIndex:
 				cmd_lockmode = AccessExclusiveLock;
 				break;
 
@@ -5246,6 +5247,11 @@ ATPrepCmd(List **wqueue, Relation rel, AlterTableCmd *cmd,
 			/* XXX: check permissions */
 			pass = AT_PASS_MISC;
 			break;
+		case AT_PartAttachIndex:
+			ATSimplePermissions(rel, ATT_INDEX);
+			/* No command-specific prep needed */
+			pass = AT_PASS_MISC;
+			break;
 
 		default:				/* oops */
 			elog(ERROR, "unrecognized alter table type: %d",
@@ -5608,6 +5614,10 @@ ATExecCmd(List **wqueue, AlteredTableInfo *tab, Relation *rel_p,
 			break;
 		case AT_PartAddInternal:
 			ATExecPartAddInternal(rel, cmd->def);
+			break;
+		case AT_PartAttachIndex:
+			ATExecAttachPartitionIdx(wqueue, rel,
+									 (AlterPartitionId*) ((AlterPartitionCmd *) cmd->def)->partid, false);
 			break;
 		default:				/* oops */
 			elog(ERROR, "unrecognized alter table type: %d",
@@ -20087,6 +20097,9 @@ char *alterTableCmdString(AlterTableType subtype)
 		case AT_AddOids: /* ALTER TABLE SET WITH OIDS */
 		case AT_AddOidsRecurse: /* ALTER TABLE SET WITH OIDS */
 			break;
+			
+		case AT_PartAttachIndex:
+			break;
 	}
 	
 	if ( cmdstring == NULL )
@@ -20478,15 +20491,21 @@ RangeVarCallbackForAttachIndex(const RangeVar *rv, Oid relOid, Oid oldRelOid,
  * ALTER INDEX i1 ATTACH PARTITION i2
  */
 void
-ATExecAttachPartitionIdx(List **wqueue, Relation parentIdx, RangeVar *name, bool is_partition_exchange)
+ATExecAttachPartitionIdx(List **wqueue, Relation parentIdx, AlterPartitionId *alterpartId, bool is_partition_exchange)
 {
 	Relation	partIdx;
 	Relation	partTbl;
 	Relation	parentTbl;
+	RangeVar	*name;
 	Oid			partIdxId;
 	Oid			currParent;
 	struct AttachIndexCallbackState state;
 
+	Assert(alterpartId->idtype == AT_AP_IDRangeVar);
+	Assert(IsA(alterpartId->partiddef, RangeVar));
+
+	name = (RangeVar *) alterpartId->partiddef;
+	
 	/*
 	 * We need to obtain lock on the index 'name' to modify it, but we also
 	 * need to read its owning table's tuple descriptor -- so we need to lock

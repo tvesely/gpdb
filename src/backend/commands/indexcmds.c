@@ -948,8 +948,39 @@ DefineIndex(Oid relationId,
 							ConstraintSetParentConstraint(cldConstrOid,
 														  createdConstraintId);
 
+						// TODO: in upstream, when a child index is invalidated, the parent is too. Do we care?
 						if (!IndexIsValid(cldidx->rd_index))
 							invalidate_parent = true;
+
+						if (shouldDispatch)
+						{
+							AlterTableCmd *altertableCmd = makeNode(AlterTableCmd);
+							altertableCmd->subtype = AT_PartAttachIndex;
+
+							AlterPartitionId *alterpartId = makeNode(AlterPartitionId);
+							alterpartId->idtype = AT_AP_IDRangeVar;
+							alterpartId->partiddef = (Node*) makeRangeVar(get_namespace_name(cldidx->rd_rel->relnamespace),
+																		  RelationGetRelationName(cldidx), -1);
+
+							AlterPartitionCmd * alterpartCmd = makeNode(AlterPartitionCmd);
+							alterpartCmd->partid = (Node*) alterpartId;
+
+							altertableCmd->def = (Node*) alterpartCmd;
+
+							AlterTableStmt *alterstmt = makeNode(AlterTableStmt);
+							alterstmt->relation = makeRangeVar(get_namespace_name(namespaceId),
+																	   indexRelationName, -1);
+							alterstmt->relkind = OBJECT_INDEX;
+
+							alterstmt->cmds = lappend(alterstmt->cmds, altertableCmd);
+
+							CdbDispatchUtilityStatement((Node *) alterstmt,
+														DF_CANCEL_ON_ERROR |
+														DF_WITH_SNAPSHOT |
+														DF_NEED_TWO_PHASE,
+														GetAssignedOidsForDispatch(),
+														NULL);
+						}
 
 						found = true;
 						/* keep lock till commit */

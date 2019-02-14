@@ -1822,6 +1822,8 @@ BuildIndexInfo(Relation index)
 	ii->ii_Concurrent = false;
 	ii->ii_BrokenHotChain = false;
 
+	ii->ii_Am = index->rd_rel->relam;
+
 	return ii;
 }
 

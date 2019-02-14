@@ -141,5 +141,6 @@ extern void RangeVarCallbackOwnsRelation(const RangeVar *relation,
  * should cdb_exchange_part_constraints be moved to tablecmds.c?
  */
 extern void ATExecAttachPartitionIdx(List **wqueue, Relation rel,
-											  RangeVar *name, bool is_partition_exchange);
+									  AlterPartitionId *alterpartId,
+									  bool is_partition_exchange);
 #endif   /* TABLECMDS_H */

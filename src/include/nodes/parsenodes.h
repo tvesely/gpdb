@@ -1521,7 +1521,8 @@ typedef enum AlterTableType
 	AT_PartSetTemplate,			/* Set Subpartition Template */
 	AT_PartSplit,				/* Split */
 	AT_PartTruncate,			/* Truncate */
-	AT_PartAddInternal			/* CREATE TABLE time partition addition */
+	AT_PartAddInternal,			/* CREATE TABLE time partition addition */
+	AT_PartAttachIndex			/* ALTER INDEX ATTACH PARTITION (not exposed to user) */
 } AlterTableType;
 
 typedef struct ReplicaIdentityStmt
@@ -1569,7 +1570,8 @@ typedef enum AlterPartitionIdType
 	AT_AP_ID_oid,				/* IDentifier by oid (for internal use only) */
 	AT_AP_IDList,				/* List of IDentifier(for internal use only) */
 	AT_AP_IDRule,				/* partition rule (for internal use only) */
-	AT_AP_IDDefault				/* IDentify DEFAULT partition */
+	AT_AP_IDDefault,			/* IDentify DEFAULT partition */
+	AT_AP_IDRangeVar			/* IDentify Partition by RangeVar */
 } AlterPartitionIdType;
 
 typedef struct AlterPartitionId /* Identify a partition by name, val, pos */
