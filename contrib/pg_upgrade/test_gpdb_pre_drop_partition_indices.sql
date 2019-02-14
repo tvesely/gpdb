@@ -32,6 +32,6 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
-SELECT drop_indexes();
+--SELECT drop_indexes();
 DROP FUNCTION drop_indexes();
 
