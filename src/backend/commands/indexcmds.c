@@ -856,7 +856,6 @@ DefineIndex(Oid relationId,
 		if (interpretInhOption(stmt->relation->inhOpt) && (Gp_role == GP_ROLE_DISPATCH))
 		{
 			List *my_part_oids = find_inheritance_children(RelationGetRelid(rel), NoLock);
-			bool		invalidate_parent = false;
 			TupleDesc	parentDesc;
 			Oid		   *opfamOids;
 			ListCell   *lc;
@@ -947,10 +946,6 @@ DefineIndex(Oid relationId,
 						if (createdConstraintId != InvalidOid)
 							ConstraintSetParentConstraint(cldConstrOid,
 														  createdConstraintId);
-
-						// TODO: in upstream, when a child index is invalidated, the parent is too. Do we care?
-						if (!IndexIsValid(cldidx->rd_index))
-							invalidate_parent = true;
 
 						if (shouldDispatch)
 						{
@@ -1052,33 +1047,6 @@ DefineIndex(Oid relationId,
 				}
 
 				pfree(attmap);
-			}
-
-			/*
-			 * The pg_index row we inserted for this index was marked
-			 * indisvalid=true.  But if we attached an existing index that is
-			 * invalid, this is incorrect, so update our row to invalid too.
-			 */
-			if (invalidate_parent)
-			{
-				Relation	pg_index = heap_open(IndexRelationId, RowExclusiveLock);
-				HeapTuple	tup,
-							newtup;
-
-				tup = SearchSysCache1(INDEXRELID,
-									  ObjectIdGetDatum(indexRelationId));
-				if (!tup)
-					elog(ERROR, "cache lookup failed for index %u",
-						 indexRelationId);
-				newtup = heap_copytuple(tup);
-				((Form_pg_index) GETSTRUCT(newtup))->indisvalid = false;
-				
-				simple_heap_update(pg_index, &tuple->t_self, newtup);
-				CatalogUpdateIndexes(pg_index, newtup);
-
-				ReleaseSysCache(tup);
-				heap_close(pg_index, RowExclusiveLock);
-				heap_freetuple(newtup);
 			}
 		}
 		/*
