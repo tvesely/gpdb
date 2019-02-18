@@ -48,6 +48,7 @@
 #include "parser/parse_relation.h"
 #include "parser/parse_target.h"
 #include "parser/parse_utilcmd.h"
+#include "storage/lmgr.h"
 #include "tcop/utility.h"
 #include "utils/acl.h"
 #include "utils/builtins.h"
@@ -67,6 +68,8 @@
 typedef struct
 {
 	char	   *key;
+	bool        indexed_cons;
+	List	   *table_cons;
 	List	   *part_cons;
 	List	   *cand_cons;
 } ConstraintEntry;
@@ -79,6 +82,7 @@ typedef struct
 
 typedef enum
 {
+	PART_TABLE,
 	PART_PART,
 	PART_CAND
 } PartExchangeRole;
@@ -88,7 +92,8 @@ static void record_constraints(Relation pgcon, MemoryContext context,
 
 static char *constraint_names(List *cons);
 
-static void constraint_diffs(List *cons_a, List *cons_b, List **missing, List **extra);
+static void constraint_diffs(List *cons_a, List *cons_b, bool match_inheritance,
+				 List **missing, List **extra);
 
 static void add_template_encoding_clauses(Oid relid, Oid paroid, List *stenc);
 
@@ -191,7 +196,7 @@ static bool
 			relation_has_supers(Oid relid);
 
 static NewConstraint *constraint_apply_mapped(HeapTuple tuple, AttrMap *map, Relation cand,
-						bool validate, bool is_split, Relation pgcon);
+						bool validate, Relation pgcon);
 
 static char *ChooseConstraintNameForPartitionCreate(const char *rname,
 									   const char *cname,
@@ -751,6 +756,8 @@ record_constraints(Relation pgcon,
 	MemoryContext oldcontext;
 	ScanKeyData scankey;
 	SysScanDesc sscan;
+	Form_pg_constraint con;
+
 
 	ScanKeyInit(&scankey, Anum_pg_constraint_conrelid,
 				BTEqualStrategyNumber, F_OIDEQ,
@@ -778,12 +785,43 @@ record_constraints(Relation pgcon,
 		if (!found)
 		{
 			entry->key = condef;
+			entry->indexed_cons = false;
+			entry->table_cons = NIL;
 			entry->part_cons = NIL;
 			entry->cand_cons = NIL;
 		}
+
+		con = (Form_pg_constraint) GETSTRUCT(tuple);
+
+		switch (con->contype)
+		{
+			case CONSTRAINT_PRIMARY:
+			case CONSTRAINT_UNIQUE:
+				/*
+				 * We need an AccessSharelock on the partition and the
+				 * candidate indexes because we will renaming them.
+				 */
+				LockRelationOid(con->conindid, AccessShareLock);
+				entry->indexed_cons = true;
+				break;
+			/*
+			 * Other types of constraints should not need special treatment
+			 */
+			case CONSTRAINT_CHECK:
+			case CONSTRAINT_FOREIGN:
+			case CONSTRAINT_TRIGGER:
+				break;
+			default:
+				Assert(false);
+		}
+
 		tuple = heap_copytuple(tuple);
 		switch (xrole)
 		{
+			case PART_TABLE:
+				entry->table_cons = sorted_insert_list(
+													   entry->table_cons, tuple);
+				break;
 			case PART_PART:
 				entry->part_cons = sorted_insert_list(
 													  entry->part_cons, tuple);
@@ -801,12 +839,9 @@ record_constraints(Relation pgcon,
 	systable_endscan(sscan);
 }
 
-/* Subroutine of ATPExecPartExchange used to swap constraints on existing part
- * and candidate part. Throw an error if the existing constraints do not match
- * the incoming candidate partition constraints. This function also identifies
- * the CHECK constraints on the partition being exchanged, and adds them to the
- * incoming candidate.  Note that this runs on both the QD and QEs so must not
- * assume availability of partition catalogs.
+/* Subroutine of ATPExecPartExchange used to swap constraints on existing
+ * part and candidate part.  Note that this runs on both the QD and QEs
+ * so must not assume availability of partition catalogs.
  *
  * table -- open relation of the parent partitioned table
  * part -- open relation of existing part to exchange
@@ -837,8 +872,9 @@ cdb_exchange_part_constraints(Relation table,
 
 	List	   *excess_constraints = NIL;
 	List	   *missing_constraints = NIL;
+	List	   *missing_inherited_constraints = NIL;
 	List	   *missing_part_constraints = NIL;
-	List	   *matching_constraints = NIL;
+	List	   *indexed_constraints = NIL;
 	List	   *validation_list = NIL;
 	int			delta_checks = 0;
 
@@ -875,13 +911,12 @@ cdb_exchange_part_constraints(Relation table,
 	 * that these maps are inverse to the usual table-to-part maps.
 	 */
 	oldcontext = MemoryContextSwitchTo(context);
-	// TODO: DefineIndex has an upstream version of this(map_variable_attnos).
-	//  Should we be using that instead, or do we want to make DefineIndex use ours?
 	map_part_attrs(part, table, &p2t, TRUE);
 	map_part_attrs(cand, table, &c2t, TRUE);
 	MemoryContextSwitchTo(oldcontext);
 
 	/* Find and record constraints on the players. */
+	record_constraints(pgcon, context, hash_tbl, table, PART_TABLE);
 	record_constraints(pgcon, context, hash_tbl, part, PART_PART);
 	record_constraints(pgcon, context, hash_tbl, cand, PART_CAND);
 	hash_freeze(hash_tbl);
@@ -897,190 +932,217 @@ cdb_exchange_part_constraints(Relation table,
 	hash_seq_init(&hash_seq, hash_tbl);
 	while ((entry = hash_seq_search(&hash_seq)))
 	{
-		// TODO: bring back comments that were removed here
-		// TODO: bring back the table_cons stuff here so that we can compare all constraints against the parent table
-		if (list_length(entry->part_cons) > 0)	/* and none on whole */
+		if (entry->indexed_cons)
 		{
-
 			/*
-			 * First, check for inherited rules. Catch all constraints that
-			 * are inherited and check them against the list of constraints
-			 * that match in the incoming relation.
+			 * INDEX BACKED CONSTRAINTS
 			 *
-			 * Constraints that are inherited will never be check constraints.
+			 * Index backed constraints may inherit from a parent partition,
+			 * so they need to have the pg_inherits and pg_depend relationships
+			 * swapped.
+			 *
+			 * Unlike other constraints, because they are backed by indexes,
+			 * they must have a unique name, so the constraint name on the partition must be
+			 * swapped with the constraint name on the new table.
 			 */
-			ListCell   *lc;
-			List	   *inherited_constraints = NIL;
-			List	   *partition_constraints = NIL;
+			List	   *missing = NIL;
+			List	   *extra = NIL;
 
-			foreach(lc, entry->part_cons)
+			if(list_length(entry->table_cons) > 0)
 			{
-
-				HeapTuple	tuple = (HeapTuple) lfirst(lc);
-				Form_pg_constraint constraint = (Form_pg_constraint) GETSTRUCT(tuple);
-
 				/*
-				 * The constraint has a parent, so we inherited it from the
-				 * parent partition
-				 *
-				 * TODO: Should this use something similar to has_superclass?
+				 * Find any constraints that are missing from the partition that
+				 * exist on the parent. The missing constraints will need to be
+				 * added to the partition before we will allow a partition
+				 * exchange. The extra constraints are OK, as long as we find a
+				 * corresponding constraint on the candidate.
 				 */
-				if (constraint->connoinherit == false && constraint->conislocal == false && constraint->coninhcount > 0)
-				{
-					Assert(constraint->contype != CONSTRAINT_CHECK);
-					inherited_constraints = lappend(inherited_constraints, tuple);
-				}
-				else
-				{
-					partition_constraints = lappend(partition_constraints, tuple);
-				}
+				constraint_diffs(entry->table_cons, entry->part_cons, true, &missing, &extra);
+				missing_inherited_constraints = list_concat(missing_inherited_constraints, missing);
+
 			}
 
-			if (list_length(partition_constraints) > 0)
+			missing = NIL;
+			extra = NIL;
+
+			/*
+			 * Compare indexes between the existing and the incoming partition.
+			 */
+			constraint_diffs(entry->part_cons, entry->cand_cons, false, &missing, &extra);
+			missing_constraints = list_concat(missing_constraints, missing);
+			excess_constraints = list_concat(excess_constraints, extra);
+
+			ListCell *lc;
+
+			/*
+			 * Pop off any constraints that were added to either missing
+			 * or extra. What remains are the matching constraint pairs
+			 * for name exchange.
+			 */
+			foreach(lc, missing)
+			{
+				list_delete_ptr(entry->table_cons, lfirst(lc));
+			}
+
+			foreach(lc, extra)
+			{
+				list_delete_ptr(entry->cand_cons, lfirst(lc));
+			}
+
+			if (list_length(entry->part_cons) > 0 && list_length(entry->cand_cons) > 0)
+				indexed_constraints = lappend(indexed_constraints, entry);
+		}
+		else if (list_length(entry->table_cons) > 0)
+		{
+			/*
+			 * REGULAR CONSTRAINT
+			 *
+			 * Constraints on the whole partitioned table are regular (in the
+			 * sense that they do not enforce partitioning rules and
+			 * corresponding constraints must occur on every part).
+			 */
+
+
+			List	   *missing = NIL;
+			List	   *extra = NIL;
+
+			if (list_length(entry->part_cons) == 0)
 			{
 				/*
-				 * If we found inherited rules, but not all of the existing
-				 * constraints matching this definition are inherited, we have
-				 * a dangling constraint
+				 * The regular constraint is missing from the existing part,
+				 * so there is a database anomaly.  Warn rather than issuing
+				 * an error, because this may be an attempt to use EXCHANGE to
+				 * correct the problem.  There may be multiple constraints
+				 * with different names, but report only the first name since
+				 * the constraint expression itself is all that matters.
 				 */
-				if (list_length(inherited_constraints) > 0)
-				{
-					elog(ERROR,
-						 "invalid partition constraint on \"%s\"",
-						 RelationGetRelationName(part));
-				}
-
-				/*
-				 * PARTITION CONSTRAINT
-				 *
-				 * Constraints on the part and not the whole must guard a
-				 * partition rule, so they must be CHECK constraints on
-				 * partitioning columns. They are managed internally, so there
-				 * must be only one of them. (Though a part will have a
-				 * partition constraint for each partition level, a given
-				 * constraint should appear only once per part.)
-				 *
-				 * They should either already occur on the candidate or be
-				 * added. Partition constraint names are not carefully managed
-				 * so they shouldn't be regarded as meaningful.
-				 *
-				 * Since we use the partition constraint of the part to check
-				 * or construct the partition constraint of the candidate, we
-				 * insist it is in good working order, and issue an error, if
-				 * not.
-				 */
-				int			n = list_length(entry->part_cons);
-
-				if (n > 1)
-				{
-					elog(ERROR,
-						 "multiple partition constraints (same key) on \"%s\"",
-						 RelationGetRelationName(part));
-				}
-
-				/*
-				 * Get the model partition constraint.
-				 */
-				tuple = linitial(entry->part_cons);
+				tuple = linitial(entry->table_cons);
 				con = (Form_pg_constraint) GETSTRUCT(tuple);
 
+				ereport(WARNING,
+						(errcode(ERRCODE_WARNING),
+						 errmsg("ignoring inconsistency: \"%s\" has no constraint corresponding to \"%s\" on \"%s\"",
+								RelationGetRelationName(part),
+								NameStr(con->conname),
+								RelationGetRelationName(table))));
+			}
+
+
+			/*
+			 * The regular constraint should ultimately appear on the
+			 * candidate part the same number of times and with the same name
+			 * as it appears on the partitioned table. The call to
+			 * constraint_diff will find matching names and we'll be left with
+			 * occurrences of the constraint that must be added to the
+			 * candidate (missing) and occurrences that must be dropped from
+			 * the candidate (extra).
+			 */
+			constraint_diffs(entry->table_cons, entry->cand_cons, false, &missing, &extra);
+			missing_constraints = list_concat(missing_constraints, missing);
+			excess_constraints = list_concat(excess_constraints, extra);
+		}
+		else if (list_length(entry->part_cons) > 0) /* and none on whole */
+		{
+			/*
+			 * PARTITION CONSTRAINT
+			 *
+			 * Constraints on the part and not the whole must guard a
+			 * partition rule, so they must be CHECK constraints on
+			 * partitioning columns. They are managed internally, so there
+			 * must be only one of them. (Though a part will have a partition
+			 * constraint for each partition level, a given constraint should
+			 * appear only once per part.)
+			 *
+			 * They should either already occur on the candidate or be added.
+			 * Partition constraint names are not carefully managed so they
+			 * shouldn't be regarded as meaningful.
+			 *
+			 * Since we use the partition constraint of the part to check or
+			 * construct the partition constraint of the candidate, we insist
+			 * it is in good working order, and issue an error, if not.
+			 */
+			int			n = list_length(entry->part_cons);
+
+			if (n > 1)
+			{
+				elog(ERROR,
+					 "multiple partition constraints (same key) on \"%s\"",
+					 RelationGetRelationName(part));
+			}
+
+			/*
+			 * Get the model partition constraint.
+			 */
+			tuple = linitial(entry->part_cons);
+			con = (Form_pg_constraint) GETSTRUCT(tuple);
+
+			/*
+			 * Check it, though this is cursory in that we don't check that
+			 * the right attributes are involved and that the semantics are
+			 * right.
+			 */
+			if (con->contype != CONSTRAINT_CHECK)
+			{
+				elog(ERROR,
+					 "invalid partition constraint on \"%s\"",
+					 RelationGetRelationName(part));
+			}
+
+			n = list_length(entry->cand_cons);
+
+			if (n == 0)
+			{
 				/*
-				 * Check it, though this is cursory in that we don't check
-				 * that the right attributes are involved and that the
-				 * semantics are right.
+				 * The partition constraint is missing from the candidate and
+				 * must be added.
 				 */
-				if (con->contype != CONSTRAINT_CHECK)
+				missing_part_constraints = lappend(missing_part_constraints,
+												   (HeapTuple) linitial(entry->part_cons));
+			}
+			else if (n == 1)
+			{
+				/*
+				 * One instance of the partition constraint exists on the
+				 * candidate, so let's not worry about name drift.  All is
+				 * well.
+				 */
+			}
+			else
+			{
+				/*
+				 * Several instances of the partition constraint exist on the
+				 * candidate. If one has a matching name, prefer it. Else,
+				 * just chose the first (arbitrary).
+				 */
+				List	   *missing = NIL;
+				List	   *extra = NIL;
+
+				constraint_diffs(entry->part_cons, entry->cand_cons, false, &missing, &extra);
+
+				if (list_length(missing) == 0)
 				{
-					// TODO: We throw this error when the incoming table does not have the correct
-					//  matching constraint- we should instead be giving a helpful error message 
-					//  saying what constraint needs to be added to the incoming table
-					elog(ERROR,
-						 "invalid partition constraint on \"%s\"",
-						 RelationGetRelationName(part));
+					excess_constraints = list_concat(excess_constraints, extra);
 				}
-
-				n = list_length(entry->cand_cons);
-
-				if (n == 0)
+				else			/* missing */
 				{
-					/*
-					 * The partition constraint is missing from the candidate
-					 * and must be added.
-					 */
-					missing_part_constraints = lappend(missing_part_constraints,
-													   (HeapTuple) linitial(entry->part_cons));
-				}
-				else if (n == 1)
-				{
-					/*
-					 * One instance of the partition constraint exists on the
-					 * candidate, so let's not worry about name drift.  All is
-					 * well.
-					 */
-				}
-				else
-				{
-					/*
-					 * Several instances of the partition constraint exist on
-					 * the candidate. If one has a matching name, prefer it.
-					 * Else, just chose the first (arbitrary).
-					 */
-					List	   *missing = NIL;
-					List	   *extra = NIL;
+					ListCell   *lc;
+					bool		skip = TRUE;
 
-					constraint_diffs(entry->part_cons, entry->cand_cons, &missing, &extra);
-
-					if (list_length(missing) == 0)
+					foreach(lc, entry->cand_cons)
 					{
-						excess_constraints = list_concat(excess_constraints, extra);
-					}
-					else		/* missing */
-					{
-						ListCell   *lc;
-						bool		skip = TRUE;
+						HeapTuple	tuple = (HeapTuple) lfirst(lc);
 
-						foreach(lc, entry->cand_cons)
+						if (skip)
 						{
-							HeapTuple	tuple = (HeapTuple) lfirst(lc);
-
-							if (skip)
-							{
-								skip = FALSE;
-							}
-							else
-							{
-								excess_constraints = lappend(excess_constraints, tuple);
-							}
+							skip = FALSE;
+						}
+						else
+						{
+							excess_constraints = lappend(excess_constraints, tuple);
 						}
 					}
 				}
 			}
-
-
-			if (list_length(inherited_constraints) > 0)
-			{
-				List	   *missing = NIL;
-				List	   *extra = NIL;
-
-				Assert(list_length(partition_constraints) == 0);
-
-				constraint_diffs(entry->part_cons, entry->cand_cons, &missing, &extra);
-				missing_constraints = list_concat(missing_constraints, missing);
-				excess_constraints = list_concat(excess_constraints, extra);
-
-				/*
-				 * Pop off any constraints that were added to either missing
-				 * or extra. What remains are the matching constraint pairs
-				 * that need to exchange their inheritance.
-				 */
-
-				entry->part_cons = list_difference(entry->part_cons, missing);
-				entry->cand_cons = list_difference(entry->cand_cons, extra);
-				if (list_length(entry->part_cons) > 0 && list_length(entry->cand_cons) > 0)
-					matching_constraints = lappend(matching_constraints, entry);
-			}
-
-
 		}
 		else if (list_length(entry->cand_cons) > 0) /* and none on whole or
 													 * part */
@@ -1118,6 +1180,22 @@ cdb_exchange_part_constraints(Relation table,
 				 errhint("Drop the invalid constraints and retry.")));
 	}
 
+	if (missing_inherited_constraints)
+	{
+		/*
+		 * If the parent table has an extra constraint that is not
+		 * inherited by the existing partition, then don't allow the echange
+		 * to occur until that has been corrected.
+		 */
+		ereport(ERROR,
+		        (errcode(ERRCODE_INTEGRITY_CONSTRAINT_VIOLATION),
+			        errmsg("Inherited constraints(s) found on \"%s\" that do not exist on \"%s\": %s",
+			               RelationGetRelationName(table),
+			               RelationGetRelationName(part),
+			               constraint_names(missing_inherited_constraints)),
+			        errhint("Attach missing constraints and retry.")));
+	}
+
 	if (missing_part_constraints)
 	{
 		ListCell   *lc;
@@ -1139,7 +1217,7 @@ cdb_exchange_part_constraints(Relation table,
 
 			map_part_attrs(part, cand, &map, TRUE);
 			nc = constraint_apply_mapped(missing_part_constraint, map, cand,
-										 validate, is_split, pgcon);
+										 validate, pgcon);
 			if (nc)
 				validation_list = lappend(validation_list, nc);
 
@@ -1164,7 +1242,7 @@ cdb_exchange_part_constraints(Relation table,
 			Form_pg_constraint mcon = (Form_pg_constraint) GETSTRUCT(tuple);
 
 			nc = constraint_apply_mapped(tuple, map, cand,
-										 validate, is_split, pgcon);
+										 validate, pgcon);
 			if (nc)
 				validation_list = lappend(validation_list, nc);
 
@@ -1173,11 +1251,11 @@ cdb_exchange_part_constraints(Relation table,
 		}
 	}
 
-	if (matching_constraints)
+	if (indexed_constraints)
 	{
 		ListCell   *lcentry;
 
-		foreach(lcentry, matching_constraints)
+		foreach(lcentry, indexed_constraints)
 		{
 			ListCell   *lcpart;
 			ListCell   *lccand;
@@ -1186,8 +1264,6 @@ cdb_exchange_part_constraints(Relation table,
 
 			forboth(lcpart, entry->part_cons, lccand, entry->cand_cons)
 			{
-				Relation partIndex;
-				Relation parentIndex;
 				char		tmpname[NAMEDATALEN];
 				NameData	part_constraint_name;
 				NameData	cand_constraint_name;
@@ -1202,16 +1278,6 @@ cdb_exchange_part_constraints(Relation table,
 				elog(DEBUG1, "Exchanging inheritance for %s and %s", NameStr(part_constraint->conname),
 					 NameStr(cand_constraint->conname));
 				
-				// TODO: what lock level do we need here?
-				parentIndex = index_open(rel_partition_get_root(part_constraint->conindid), AccessShareLock);
-				partIndex = index_open(cand_constraint->conindid, AccessShareLock);
-				
-				AlterPartitionId *alterpartId = makeNode(AlterPartitionId);
-				alterpartId->idtype = AT_AP_IDRangeVar;
-				alterpartId->partiddef = (Node*) makeRangeVar(get_namespace_name(partIndex->rd_rel->relnamespace),
-															  RelationGetRelationName(partIndex), -1);
-				// TODO: We need to use processUtility here instead
-				ATExecAttachPartitionIdx(NULL, parentIndex, alterpartId, true);
 				/* temporary name */
 				snprintf(tmpname, NAMEDATALEN, "pg_temp_exchange_%u_%i", part_constraint->conindid, MyBackendId);
 
@@ -1230,7 +1296,6 @@ cdb_exchange_part_constraints(Relation table,
 				renamestmt->newname = tmpname;
 				renamestmt->behavior = DROP_RESTRICT;
 
-				// TODO: We need to use processUtility here instead
 				RenameConstraint(renamestmt);
 
 				CommandCounterIncrement();
@@ -1247,7 +1312,6 @@ cdb_exchange_part_constraints(Relation table,
 				renamestmt->newname = NameStr(part_constraint->conname);
 				renamestmt->behavior = DROP_RESTRICT;
 
-				// TODO: We need to use processUtility here instead
 				RenameConstraint(renamestmt);
 
 				CommandCounterIncrement();
@@ -1263,14 +1327,9 @@ cdb_exchange_part_constraints(Relation table,
 				renamestmt->newname = NameStr(cand_constraint->conname);
 				renamestmt->behavior = DROP_RESTRICT;
 
-				// TODO: We need to use processUtility here instead
 				RenameConstraint(renamestmt);
 
 				CommandCounterIncrement();
-				
-				// TODO: Should we drop locks here?
-				index_close(partIndex, NoLock);
-				index_close(parentIndex, NoLock);
 			}
 		}
 	}
@@ -1338,12 +1397,14 @@ constraint_names(List *cons)
  * the other list.
  */
 static void
-constraint_diffs(List *cons_a, List *cons_b, List **missing, List **extra)
+constraint_diffs(List *cons_a, List *cons_b, bool match_inheritance, List **missing, List **extra)
 {
 	ListCell   *cell_a,
 			   *cell_b;
 	Index		pos_a,
 				pos_b;
+	int		   *match_a,
+			   *match_b;
 	int			n;
 
 	int			len_a = list_length(cons_a);
@@ -1366,37 +1427,80 @@ constraint_diffs(List *cons_a, List *cons_b, List **missing, List **extra)
 		return;
 	}
 
+	match_a = (int *) palloc(len_a * sizeof(int));
+	for (pos_a = 0; pos_a < len_a; pos_a++)
+		match_a[pos_a] = -1;
+
+	match_b = (int *) palloc(len_b * sizeof(int));
+	for (pos_b = 0; pos_b < len_b; pos_b++)
+		match_b[pos_b] = -1;
+
+	if(match_inheritance)
+	{
+		pos_b = 0;
+		foreach(cell_b, cons_b)
+		{
+			HeapTuple tuple_b = (HeapTuple) lfirst(cell_b);
+			Form_pg_constraint b = (Form_pg_constraint) GETSTRUCT(tuple_b);
+			pos_a = 0;
+
+			foreach(cell_a, cons_a)
+			{
+				HeapTuple tuple_a = lfirst(cell_a);
+				Form_pg_constraint a = (Form_pg_constraint) GETSTRUCT(tuple_a);
+
+				List *inheritors = find_inheritance_children(a->conindid, NoLock);
+
+				if (list_member_oid(inheritors, b->conindid))
+				{
+					/* No duplicate inheritors on either list. */
+					Assert(match_a[pos_a] == -1 && match_b[pos_b] == -1);
+
+					match_b[pos_b] = pos_a;
+					match_a[pos_a] = pos_b;
+					break;
+				}
+				pos_a++;
+			}
+			pos_b++;
+		}
+	}
 
 	*missing = NIL;
 	*extra = NIL;
 
 	n = len_a - len_b;
-	if (n > 0)
+	if (n > 0 || match_inheritance)
 	{
 		pos_a = 0;
 		foreach(cell_a, cons_a)
 		{
-			*missing = lappend(*missing, lfirst(cell_a));
+			if (match_a[pos_a] == -1)
+				*missing = lappend(*missing, lfirst(cell_a));
 			pos_a++;
 			n--;
-			if (n <= 0)
+			if (n <= 0 && !match_inheritance)
 				break;
 		}
 	}
 
 	n = len_b - len_a;
-	if (n > 0)
+	if (n > 0 || match_inheritance)
 	{
 		pos_b = 0;
 		foreach(cell_b, cons_b)
 		{
-			*extra = lappend(*extra, lfirst(cell_b));
+			if (match_b[pos_b] == -1)
+				*extra = lappend(*extra, lfirst(cell_b));
 			pos_b++;
 			n--;
-			if (n <= 0)
+			if (n <= 0 && !match_inheritance)
 				break;
 		}
 	}
+
+	pfree(match_a);
+	pfree(match_b);
 }
 
 /*
@@ -7792,7 +7896,7 @@ is_exchangeable(Relation rel, Relation oldrel, Relation newrel, bool throw)
  */
 static NewConstraint *
 constraint_apply_mapped(HeapTuple tuple, AttrMap *map, Relation cand,
-						bool validate, bool is_split, Relation pgcon)
+						bool validate, Relation pgcon)
 {
 	Datum		val;
 	bool		isnull;
@@ -7956,11 +8060,7 @@ constraint_apply_mapped(HeapTuple tuple, AttrMap *map, Relation cand,
 				char	   *what = (con->contype == CONSTRAINT_PRIMARY) ? "PRIMARY KEY" : "UNIQUE";
 				char	   *who = NameStr(con->conname);
 
-				if (is_split)
-				{
-					;			/* nothing */
-				}
-				else if (validate)
+				if (validate)
 				{
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),

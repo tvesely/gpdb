@@ -16862,6 +16862,7 @@ ATPExecPartExchange(AlteredTableInfo *tab, Relation rel, AlterPartitionCmd *pc)
 		char			*oldname;
 		Relation		 newrel;
 		Relation		 oldrel;
+		Relation		 parentrel = NULL;
 		AttrMap			*newmap; /* used for compatability check below only */
 		AttrMap			*oldmap; /* used for compatability check below only */
 		List			*newcons;
@@ -16869,6 +16870,7 @@ ATPExecPartExchange(AlteredTableInfo *tab, Relation rel, AlterPartitionCmd *pc)
 		bool			 validate	= intVal(pc2->arg1) ? true : false;
 		Oid				 oldnspid	= InvalidOid;
 		Oid				 newnspid	= InvalidOid;
+		Oid				 parentrelid = InvalidOid;
 		char			*newNspName = NULL;
 		char			*oldNspName = NULL;
 
@@ -16898,8 +16900,14 @@ ATPExecPartExchange(AlteredTableInfo *tab, Relation rel, AlterPartitionCmd *pc)
 		ok = map_part_attrs(rel, oldrel, &oldmap, TRUE);
 		Assert(ok);
 
+		parentrelid = rel_partition_get_root(oldrelid);
+		if (parentrelid != RelationGetRelid(rel))
+			parentrel = heap_open(parentrelid, AccessExclusiveLock);
+
 		newcons = cdb_exchange_part_constraints(
-				rel, oldrel, newrel, validate, is_split, pc);
+			(parentrel == NULL) ? rel : parentrel,
+			oldrel, newrel, validate, is_split, pc);
+
 		tab->constraints = list_concat(tab->constraints, newcons);
 		CommandCounterIncrement();
 
@@ -16915,6 +16923,8 @@ ATPExecPartExchange(AlteredTableInfo *tab, Relation rel, AlterPartitionCmd *pc)
 
 		heap_close(newrel, NoLock);
 		heap_close(oldrel, NoLock);
+		if (parentrel != NULL)
+			heap_close(parentrel, NoLock);
 
 		/* RenameRelation renames the type too */
 		RenameRelationInternal(oldrelid, tmpname1, true);
