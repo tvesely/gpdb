@@ -90,6 +90,15 @@ static void record_constraints(Relation pgcon, MemoryContext context,
 				   HTAB *hash_tbl, Relation rel,
 				   PartExchangeRole xrole);
 
+static void exchange_constraint_names(Relation part,
+                                      Relation cand,
+                                      NameData part_name,
+                                      NameData cand_name);
+
+static void rename_constraint(Relation rel,
+                              char *old_name,
+                              char *new_name);
+
 static char *constraint_names(List *cons);
 
 static void constraint_diffs(List *cons_a, List *cons_b, bool match_inheritance,
@@ -797,11 +806,6 @@ record_constraints(Relation pgcon,
 		{
 			case CONSTRAINT_PRIMARY:
 			case CONSTRAINT_UNIQUE:
-				/*
-				 * We need an AccessSharelock on the partition and the
-				 * candidate indexes because we will renaming them.
-				 */
-				LockRelationOid(con->conindid, AccessShareLock);
 				entry->indexed_cons = true;
 				break;
 			/*
@@ -1264,72 +1268,13 @@ cdb_exchange_part_constraints(Relation table,
 
 			forboth(lcpart, entry->part_cons, lccand, entry->cand_cons)
 			{
-				char		tmpname[NAMEDATALEN];
-				NameData	part_constraint_name;
-				NameData	cand_constraint_name;
-				RenameStmt *renamestmt;
-
 				HeapTuple	parttuple = (HeapTuple) lfirst(lcpart);
 				Form_pg_constraint part_constraint = (Form_pg_constraint) GETSTRUCT(parttuple);
 
 				HeapTuple	candtuple = (HeapTuple) lfirst(lccand);
 				Form_pg_constraint cand_constraint = (Form_pg_constraint) GETSTRUCT(candtuple);
 
-				elog(DEBUG1, "Exchanging inheritance for %s and %s", NameStr(part_constraint->conname),
-					 NameStr(cand_constraint->conname));
-				
-				/* temporary name */
-				snprintf(tmpname, NAMEDATALEN, "pg_temp_exchange_%u_%i", part_constraint->conindid, MyBackendId);
-
-				namecpy(&part_constraint_name, &part_constraint->conname);
-				namecpy(&cand_constraint_name, &cand_constraint->conname);
-
-				/*
-				 * Rename the partition constraint to the temp name
-				 */
-				renamestmt = makeNode(RenameStmt);
-				renamestmt->renameType = OBJECT_CONSTRAINT;
-				renamestmt->relationType = OBJECT_TABLE;
-				renamestmt->relation = makeRangeVar(get_namespace_name(part->rd_rel->relnamespace),
-													RelationGetRelationName(part), -1);
-				renamestmt->subname = NameStr(part_constraint->conname);
-				renamestmt->newname = tmpname;
-				renamestmt->behavior = DROP_RESTRICT;
-
-				RenameConstraint(renamestmt);
-
-				CommandCounterIncrement();
-
-				/*
-				 * Rename the incoming constraint to the part_constraint name
-				 */
-				renamestmt = makeNode(RenameStmt);
-				renamestmt->renameType = OBJECT_CONSTRAINT;
-				renamestmt->relationType = OBJECT_TABLE;
-				renamestmt->relation = makeRangeVar(get_namespace_name(cand->rd_rel->relnamespace),
-													RelationGetRelationName(cand), -1);
-				renamestmt->subname = NameStr(cand_constraint->conname);
-				renamestmt->newname = NameStr(part_constraint->conname);
-				renamestmt->behavior = DROP_RESTRICT;
-
-				RenameConstraint(renamestmt);
-
-				CommandCounterIncrement();
-				/*
-				 * Finally, rename the part_constraint to the original cand_constraint name
-				 */
-				renamestmt = makeNode(RenameStmt);
-				renamestmt->renameType = OBJECT_CONSTRAINT;
-				renamestmt->relationType = OBJECT_TABLE;
-				renamestmt->relation = makeRangeVar(get_namespace_name(part->rd_rel->relnamespace),
-													RelationGetRelationName(part), -1);
-				renamestmt->subname = tmpname;
-				renamestmt->newname = NameStr(cand_constraint->conname);
-				renamestmt->behavior = DROP_RESTRICT;
-
-				RenameConstraint(renamestmt);
-
-				CommandCounterIncrement();
+				exchange_constraint_names(part, cand, part_constraint->conname, cand_constraint->conname);
 			}
 		}
 	}
@@ -1347,6 +1292,42 @@ cdb_exchange_part_constraints(Relation table,
 	return validation_list;
 }
 
+static void
+exchange_constraint_names(Relation part, Relation cand, NameData part_name, NameData cand_name)
+{
+	char		temp_name[NAMEDATALEN];
+
+	elog(DEBUG1, "Exchanging names for %s and %s", NameStr(part_name),
+	     NameStr(cand_name));
+
+	snprintf(temp_name, NAMEDATALEN, "pg_temp_exchange_%u_%i", RelationGetRelid(part), MyBackendId);
+
+	/*
+	 * Since index names are unique within a namespace, assign a constraint a
+	 * temporary name to help with the exchange.
+	 */
+	rename_constraint(part, NameStr(part_name), temp_name);
+	rename_constraint(cand, NameStr(cand_name), NameStr(part_name));
+	rename_constraint(part, temp_name, NameStr(cand_name));
+}
+
+static void
+rename_constraint(Relation rel, char *old_name, char *new_name)
+{
+	RenameStmt renamestmt;
+
+	renamestmt.renameType = OBJECT_CONSTRAINT;
+	renamestmt.relationType = OBJECT_TABLE;
+	renamestmt.relation = makeRangeVar(get_namespace_name(rel->rd_rel->relnamespace),
+	                                    RelationGetRelationName(rel), -1);
+	renamestmt.subname = old_name;
+	renamestmt.newname = new_name;
+	renamestmt.behavior = DROP_RESTRICT;
+
+	RenameConstraint(&renamestmt);
+
+	CommandCounterIncrement();
+}
 /*
  * Return a string of comma-delimited names of the constraints in the
  * argument list of pg_constraint tuples.  This is primarily for use
