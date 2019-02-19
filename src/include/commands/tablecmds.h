@@ -137,10 +137,4 @@ extern void RangeVarCallbackOwnsTable(const RangeVar *relation,
 
 extern void RangeVarCallbackOwnsRelation(const RangeVar *relation,
 							 Oid relId, Oid oldRelId, void *noCatalogs);
-/* TODO: we should not really be exposing this function- it should be static
- * should cdb_exchange_part_constraints be moved to tablecmds.c?
- */
-extern void ATExecAttachPartitionIdx(List **wqueue, Relation rel,
-									  AlterPartitionId *alterpartId,
-									  bool is_partition_exchange);
 #endif   /* TABLECMDS_H */
