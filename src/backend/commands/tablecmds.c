@@ -4388,7 +4388,47 @@ ATPrepCmd(List **wqueue, Relation rel, AlterTableCmd *cmd,
 			break;
 		case AT_AddIndex:		/* ADD INDEX */
 			ATSimplePermissions(rel, ATT_TABLE);
-			/* No command-specific prep needed */
+			ATExternalPartitionCheck(cmd->subtype, rel, recursing);
+			/*
+			 * Any recursion for partitioning is done in ATExecAddIndex()
+			 * itself However, if the index supports a PK or UNIQUE constraint
+			 * and the relation is partitioned, we need to assure the
+			 * constraint is named in a reasonable way.
+			 */
+			{
+				ConstrType contype = CONSTR_NULL; /* name picker will reject this */
+				IndexStmt *topindexstmt = (IndexStmt*)cmd->def;
+				Insist(IsA(topindexstmt, IndexStmt));
+				if (topindexstmt->isconstraint)
+				{
+					switch (rel_part_status(RelationGetRelid(rel)))
+					{
+						case PART_STATUS_ROOT:
+ 							break;
+ 						case PART_STATUS_INTERIOR:
+ 						case PART_STATUS_LEAF:
+							/* Don't do this check for child parts (= internal requests). */
+ 							if (!topindexstmt->is_part_child)
+ 							{
+ 								char	*what;
+
+ 								if (contype == CONSTR_PRIMARY)
+ 									what = pstrdup("PRIMARY KEY");
+								else
+									what = pstrdup("UNIQUE");
+
+ 								ereport(ERROR,
+ 										(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+ 										 errmsg("can't place a %s constraint on just part of partitioned table \"%s\"",
+ 												what, RelationGetRelationName(rel)),
+ 										 errhint("Constrain the whole table or create a part-wise UNIQUE index instead.")));
+ 							}
+ 							break;
+ 						default:
+ 							break;
+ 					}
+				}
+			}
 			pass = AT_PASS_ADD_INDEX;
 			break;
 		case AT_AddConstraint:	/* ADD CONSTRAINT */
