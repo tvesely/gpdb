@@ -4425,7 +4425,7 @@ ATPrepCmd(List **wqueue, Relation rel, AlterTableCmd *cmd,
 
  								ereport(ERROR,
  										(errcode(ERRCODE_WRONG_OBJECT_TYPE),
- 										 errmsg("can't place a %s constraint on just part of partitioned table \"%s\"", 
+ 										 errmsg("can't place a %s constraint on just part of partitioned table \"%s\"",
  												what, RelationGetRelationName(rel)),
  										 errhint("Constrain the whole table or create a part-wise UNIQUE index instead.")));
  							}

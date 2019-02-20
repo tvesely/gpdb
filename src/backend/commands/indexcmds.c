@@ -1891,7 +1891,6 @@ ChooseRelationNameWithCache(const char *name1, const char *name2,
 				   const char *label, Oid namespaceid,
 				   HTAB *cache)
 {
-	int			pass = 0;
 	char	   *relname = NULL;
 	char		modlabel[NAMEDATALEN];
 	bool		found = false;
@@ -1899,23 +1898,22 @@ ChooseRelationNameWithCache(const char *name1, const char *name2,
 	if (GP_ROLE_EXECUTE == Gp_role)
 		elog(ERROR, "relation names cannot be chosen on QE");
 
-	/* try the unmodified label first */
 	StrNCpy(modlabel, label, sizeof(modlabel));
 
-	for (;;)
-	{
-		relname = makeObjectName(name1, name2, modlabel);
+	relname = makeObjectName(name1, name2, modlabel);
 
-		if (cache)
-			hash_search(cache, (void *) relname, HASH_FIND, &found);
+	if (cache)
+		hash_search(cache, (void *) relname, HASH_FIND, &found);
 
-		if (!found && !OidIsValid(get_relname_relid(relname, namespaceid)))
-			break;
+	if (found && OidIsValid(get_relname_relid(relname, namespaceid)))
+		ereport(ERROR,
+				(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
+					errmsg(
+						"Cannot create object. Conflicts with object named \"%s\"",
+						relname),
+					errdetail(
+						"Recreate the object with a different name or drop conflicting object")));
 
-		/* found a conflict, so try a new name component */
-		pfree(relname);
-		snprintf(modlabel, sizeof(modlabel), "%s%d", label, ++pass);
-	}
 
 	/* If we are caching found values add the value to our hash */
 	if (cache)
