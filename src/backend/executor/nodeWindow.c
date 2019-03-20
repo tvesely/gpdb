@@ -4852,6 +4852,24 @@ ExecWindow(WindowState * wstate)
 	ExprDoneCond isDone;
 	bool		last_peer = false;
 
+	/*
+	 * Check to see if we're still projecting out tuples from a previous
+	 * output tuple (because there is a function-returning-set in the
+	 * projection expressions).  If so, try to project another one.
+	 */
+	if (wstate->ps.ps_TupFromTlist)
+	{
+		TupleTableSlot *result;
+		ExprDoneCond isDone;
+
+		result = ExecProject(wstate->ps.ps_ProjInfo, &isDone);
+		if (isDone == ExprMultipleResult)
+			return result;
+		/* Done with that source tuple... */
+		wstate->ps.ps_TupFromTlist = false;
+	}
+
+restart:
 	econtext = wstate->ps.ps_ExprContext;
 
 	/* Fetch the current_row */
@@ -4923,6 +4941,15 @@ ExecWindow(WindowState * wstate)
 	 * Form the result tuple using ExecProject(), and return it.
 	 */
 	resultSlot = ExecProject(wstate->ps.ps_ProjInfo, &isDone);
+
+	if (isDone == ExprEndResult)
+	{
+		/* SRF in tlist returned no rows, so advance to next input tuple */
+		goto restart;
+	}
+
+	wstate->ps.ps_TupFromTlist =
+		(isDone == ExprMultipleResult);
 
 	if (!TupIsNull(resultSlot))
 	{
