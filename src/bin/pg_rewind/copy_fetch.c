@@ -24,6 +24,7 @@
 #include "pg_rewind.h"
 
 #include "catalog/catalog.h"
+#include "catalog/pg_tablespace.h"
 
 static void recurse_dir(const char *datadir, const char *path,
 			process_file_callback_t callback);
@@ -35,8 +36,10 @@ static void execute_pagemap(datapagemap_t *pagemap, const char *path);
  * for each file.
  */
 void
-traverse_datadir(const char *datadir, process_file_callback_t callback)
+traverse_datadir(const char *datadir, process_file_callback_t callback, 
+				 int32 dbid)
 {
+	set_tablespace_version_directory_dbid(dbid);
 	recurse_dir(datadir, NULL, callback);
 }
 
@@ -69,6 +72,7 @@ recurse_dir(const char *datadir, const char *parentpath,
 		struct stat fst;
 		char		fullpath[MAXPGPATH * 2];
 		char		path[MAXPGPATH * 2];
+		char		tablespace_path[MAXPGPATH * 2];
 
 		if (strcmp(xlde->d_name, ".") == 0 ||
 			strcmp(xlde->d_name, "..") == 0)
@@ -119,8 +123,8 @@ recurse_dir(const char *datadir, const char *parentpath,
 #endif
 		{
 #if defined(HAVE_READLINK) || defined(WIN32)
-			char		link_target[MAXPGPATH];
-			int			len;
+			char link_target[MAXPGPATH];
+			int  len;
 
 			len = readlink(fullpath, link_target, sizeof(link_target));
 			if (len < 0)
@@ -140,7 +144,11 @@ recurse_dir(const char *datadir, const char *parentpath,
 			 */
 			if ((parentpath && strcmp(parentpath, "pg_tblspc") == 0) ||
 				strcmp(path, "pg_xlog") == 0)
+			{
+				snprintf(tablespace_path, sizeof(tablespace_path), "%s/%s",
+						 path, tablespace_version_directory());
 				recurse_dir(datadir, path, callback);
+			}
 #else
 			pg_fatal("\"%s\" is a symbolic link, but symbolic links are not supported on this platform\n",
 					 fullpath);

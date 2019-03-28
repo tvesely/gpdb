@@ -29,6 +29,9 @@ extern bool dry_run;
 
 extern const char *progname;
 
+extern int32 dbid_target;
+extern int32 dbid_source;
+
 /* in parsexlog.c */
 extern void extractPageMap(const char *datadir, XLogRecPtr startpoint,
 			   TimeLineID tli, XLogRecPtr endpoint);
@@ -43,4 +46,5 @@ extern XLogRecPtr readOneRecord(const char *datadir, XLogRecPtr ptr,
 extern TimeLineHistoryEntry *rewind_parseTimeLineHistory(char *buffer,
 							TimeLineID targetTLI, int *nentries);
 
+extern void set_tablespace_version_directory_dbid(int32 dbid);
 #endif   /* PG_REWIND_H */

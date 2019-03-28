@@ -27,7 +27,10 @@
 #include "access/xlog.h"
 #include "catalog/catalog.h"
 #include "catalog/pg_tablespace.h"
+#include "cdb/cdbvars.h"
 #include "common/relpath.h"
+
+GpId GpIdentity;
 
 /* copied from timestamp.c */
 pg_time_t
@@ -116,7 +119,7 @@ tablespace_version_directory(void)
 	// Where do we get the actual value?
 	if (!path[0])
 		snprintf(path, MAXPGPATH, "%s_db%d", GP_TABLESPACE_VERSION_DIRECTORY,
-				 0 /* GpIdentity.dbid */);
+				 GpIdentity.dbid);
 
 	return path;
 }

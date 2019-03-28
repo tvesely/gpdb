@@ -23,6 +23,7 @@
 #include "access/xlog_internal.h"
 #include "catalog/catversion.h"
 #include "catalog/pg_control.h"
+#include "cdb/cdbvars.h"
 #include "getopt_long.h"
 #include "utils/palloc.h"
 #include "storage/bufpage.h"
@@ -56,6 +57,12 @@ char	   *connstr_source = NULL;
 bool		debug = false;
 bool		showprogress = false;
 bool		dry_run = false;
+
+/* GPDB tablespace related additions */
+int32       dbid_target = -1;
+int32       dbid_source = -1;
+
+extern GpId GpIdentity;
 
 static void
 usage(const char *progname)
@@ -323,7 +330,7 @@ main(int argc, char **argv)
 	pg_log(PG_PROGRESS, "reading source file list\n");
 	fetchSourceFileList();
 	pg_log(PG_PROGRESS, "reading target file list\n");
-	traverse_datadir(datadir_target, &process_target_file);
+	traverse_datadir(datadir_target, &process_target_file, dbid_target);
 
 	/*
 	 * Read the target WAL from last checkpoint before the point of fork, to
@@ -728,4 +735,64 @@ ensureCleanShutdown(const char *argv0)
 
 	if (system(cmd) != 0)
 		pg_fatal("postgres single-user mode of target instance failed for command: %s\n", cmd);
+}
+
+static void
+get_dbid(ClusterInfo *cluster)
+{
+	char		cmd[MAXPGPATH],
+	            cmd_output[MAX_STRING];
+	FILE	   *output;
+	int			pre_dot,
+		post_dot;
+
+	int		ret;
+#define MAXCMDLEN (2 * MAXPGPATH)
+	char	exec_path[MAXPGPATH];
+	char	cmd[MAXCMDLEN];
+
+	/* locate postgres binary */
+	if ((ret = find_other_exec(argv0, "postgres",
+	                           "postgres (Greenplum Database) " PG_VERSION "\n",
+	                           exec_path)) < 0)
+	{
+		char        full_path[MAXPGPATH];
+
+		if (find_my_exec(argv0, full_path) < 0)
+			strlcpy(full_path, progname, sizeof(full_path));
+
+		if (ret == -1)
+			pg_fatal("The program \"postgres\" is needed by %s but was \n"
+			         "not found in the same directory as \"%s\".\n"
+			         "Check your installation.\n", progname, full_path);
+		else
+			pg_fatal("The program \"postgres\" was found by \"%s\"\n"
+			         "but was not the same version as %s.\n"
+			         "Check your installation.\n", full_path, progname);
+	}
+	
+	snprintf(cmd, MAXCMDLEN, "\"%s\" -D \"%s\" -C gp_dbid",
+	         exec_path, datadir_target, DEVNULL);
+
+	if ((output = popen(cmd, "r")) == NULL ||
+		fgets(cmd_output, sizeof(cmd_output), output) == NULL)
+		pg_fatal("Could not get pg_ctl version data using %s: %s\n",
+		         cmd, getErrorText());
+
+	pclose(output);
+
+	/* Remove trailing newline */
+	if (strchr(cmd_output, '\n') != NULL)
+		*strchr(cmd_output, '\n') = '\0';
+
+	if (sscanf(cmd_output, "%*s %*s %*s %d.%d", &pre_dot, &post_dot) != 2)
+		pg_fatal("could not get version from %s\n", cmd);
+
+	cluster->bin_version = (pre_dot * 100 + post_dot) * 100;
+}
+
+void
+set_tablespace_version_directory_dbid(int32 dbid)
+{
+	GpIdentity.dbid = dbid;
 }
