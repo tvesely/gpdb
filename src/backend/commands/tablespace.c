@@ -19,16 +19,13 @@
  *
  * In GPDB, the "dbid" of the server is also embedded in the path, so that
  * multiple segments running on the host can use the same directory without
- * clashing with each other. In PostgreSQL, the version string used in the
- * path is in TABLESPACE_VERSION_DIRECTORY constant. In GPDB, use the
- * tablespace_version_directory() function, which appends the dbid,
- * instead.
+ * clashing with each other. Each database will create an additional folder
+ * identified by the dbid under the tablespace directory.  In PostgreSQL, the
+ * version string used in the path is in TABLESPACE_VERSION_DIRECTORY constant.
+ * In GPDB, use the GP_TABLESPACE_VERSION_DIRECTORY.
  *
- * Thus the full path to an arbitrary file is
- *			$PGDATA/pg_tblspc/spcoid/GPDB_MAJORVER_CATVER_db<dbid>/dboid/relfilenode
- * e.g.
- *			$PGDATA/pg_tblspc/20981/GPDB_8.5_201001061_db1/719849/83292814
- *
+ * The path to the tablespace looks like this:
+ *          /path/to/tablespace/<dbid>/GPDB_MAJOR_CATVER/dboid/relfilenode
  *
  * There are two tablespaces created at initdb time: pg_global (for shared
  * tables) and pg_default (for everything else).  For backwards compatibility
@@ -338,7 +335,7 @@ CreateTableSpace(CreateTableSpaceStmt *stmt)
 	 * 'PG_XXX/<dboid>/<relid>_<fork>.<nnn>'.  FYI, we never actually
 	 * reference the whole path here, but mkdir() uses the first two parts.
 	 */
-	if (strlen(location) + 1 + strlen(tablespace_version_directory()) + 1 +
+	if (strlen(location) + 1 + strlen(GP_TABLESPACE_VERSION_DIRECTORY) + 1 +
 	  OIDCHARS + 1 + OIDCHARS + 1 + FORKNAMECHARS + 1 + OIDCHARS > MAXPGPATH)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
@@ -658,12 +655,14 @@ static void
 create_tablespace_directories(const char *location, const Oid tablespaceoid)
 {
 	char	   *linkloc;
+	char	   *location_with_dbid_dir;
 	char	   *location_with_version_dir;
 	struct stat st;
 
 	linkloc = psprintf("pg_tblspc/%u", tablespaceoid);
-	location_with_version_dir = psprintf("%s/%s", location,
-										tablespace_version_directory());
+	location_with_dbid_dir = psprintf("%s/%d", location, GpIdentity.dbid);
+	location_with_version_dir = psprintf("%s/%s", location_with_dbid_dir,
+										 GP_TABLESPACE_VERSION_DIRECTORY);
 
 	/*
 	 * Attempt to coerce target directory to safe permissions.  If this fails,
@@ -700,6 +699,32 @@ create_tablespace_directories(const char *location, const Oid tablespaceoid)
 								location_with_version_dir)));
 		}
 	}
+
+	/*
+	 * In GPDB each segment has a directory with its unique dbid under the
+	 * tablespace path. Unlike the location_with_version_dir, do not error out
+	 * if it already exists.
+	 */
+	if (stat(location_with_dbid_dir, &st) < 0) {
+		if (errno == ENOENT)
+		{
+			if (mkdir(location_with_dbid_dir, S_IRWXU) < 0)
+					ereport(ERROR,
+							(errcode_for_file_access(),
+								errmsg("could not create directory \"%s\": %m",
+									location_with_version_dir)));
+		}
+		else
+			ereport(ERROR,
+					(errcode_for_file_access(),
+						errmsg("could not stat directory \"%s\": %m",
+							location_with_dbid_dir)));
+
+	}
+	else
+		ereport(DEBUG1,
+				(errmsg("Directory \"%s\" already exists in tablespace",
+					location_with_dbid_dir)));
 
 	/*
 	 * The creation of the version directory prevents more than one tablespace
@@ -750,13 +775,14 @@ create_tablespace_directories(const char *location, const Oid tablespaceoid)
 	/*
 	 * Create the symlink under PGDATA
 	 */
-	if (symlink(location, linkloc) < 0)
+	if (symlink(location_with_dbid_dir, linkloc) < 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not create symbolic link \"%s\": %m",
 						linkloc)));
 
 	pfree(linkloc);
+	pfree(location_with_dbid_dir);
 	pfree(location_with_version_dir);
 }
 
@@ -785,7 +811,7 @@ destroy_tablespace_directories(Oid tablespaceoid, bool redo)
 	struct stat st;
 
 	linkloc_with_version_dir = psprintf("pg_tblspc/%u/%s", tablespaceoid,
-										tablespace_version_directory());
+										GP_TABLESPACE_VERSION_DIRECTORY);
 
 	/*
 	 * Check if the tablespace still contains any files.  We try to rmdir each
