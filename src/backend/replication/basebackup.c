@@ -301,6 +301,12 @@ perform_base_backup(basebackup_options *opt, DIR *tblspcdir)
 			}
 			linkpath[rllen] = '\0';
 
+			get_parent_directory(linkpath);
+			if (strcmp(linkpath, "") == 0)
+				ereport(ERROR,
+					(errmsg("Path to tablespace is not a valid path: \"%s\"",
+						fullpath)));
+
 			/*
 			 * Relpath holds the relative path of the tablespace directory
 			 * when it's located within PGDATA, or NULL if it's located

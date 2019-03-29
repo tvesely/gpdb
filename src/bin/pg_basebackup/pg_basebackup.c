@@ -1181,10 +1181,10 @@ ReceiveAndUnpackTarFile(PGconn *conn, PGresult *res, int rownum)
 		/* 
 		 * Construct the new tablespace path using the given target gp dbid
 		 */
-		snprintf(gp_tablespace_filename, sizeof(filename), "%s/%s_db%d",
+		snprintf(gp_tablespace_filename, sizeof(filename), "%s/%d/%s",
 				 current_path,
-				 GP_TABLESPACE_VERSION_DIRECTORY,
-				 target_gp_dbid);
+				 target_gp_dbid,
+				 GP_TABLESPACE_VERSION_DIRECTORY);
 	}
 
 	/*
@@ -1899,7 +1899,7 @@ BaseBackup(void)
 			char	   *path = (char *) get_tablespace_mapping(PQgetvalue(res, i, 1));
 			char path_with_subdir[MAXPGPATH];
 
-			sprintf(path_with_subdir, "%s/%s_db%d", path, GP_TABLESPACE_VERSION_DIRECTORY, target_gp_dbid);
+			sprintf(path_with_subdir, "%s/%d/%s", path, target_gp_dbid, GP_TABLESPACE_VERSION_DIRECTORY);
 
 			verify_dir_is_empty_or_create(path_with_subdir);
 		}
