@@ -2,7 +2,7 @@ use strict;
 use warnings;
 use Cwd;
 use TestLib;
-use Test::More tests => 34;
+use Test::More tests => 42;
 use File::Path
 
 program_help_ok('pg_basebackup');
@@ -129,9 +129,9 @@ SKIP: {
 
 	command_fails(
 		[ 'pg_basebackup', '-D', "$tempdir/backup1", '-Fp',
-		  '--target-gp-dbid', '-1'
+		  '--target-gp-dbid', '1'
 		],
-		'plain format with tablespaces fails without tablespace mapping');
+		'plain format with tablespaces fails without tablespace mapping and target-gp-dbid as the test server dbid');
 
 	command_ok(
 		[   'pg_basebackup',    '-D',
