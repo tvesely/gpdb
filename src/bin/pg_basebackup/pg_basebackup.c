@@ -240,7 +240,7 @@ usage(void)
 	printf(_("      --xlogdir=XLOGDIR  location for the transaction log directory\n"));
 	printf(_("  -z, --gzip             compress tar output\n"));
 	printf(_("  -Z, --compress=0-9     compress tar output with given compression level\n"));
-	printf(_("  --target-gp-dbid       create tablespace subdirectories with given dbid\n"));
+	printf(_("  --target-gp-dbid       create pg_basebackup with identified with given dbid\n"));
 	printf(_("\nGeneral options:\n"));
 	printf(_("  -c, --checkpoint=fast|spread\n"
 			 "                         set fast or spread checkpointing\n"));
@@ -1144,7 +1144,6 @@ ReceiveAndUnpackTarFile(PGconn *conn, PGresult *res, int rownum)
 {
 	char		current_path[MAXPGPATH];
 	char		filename[MAXPGPATH];
-	char		gp_tablespace_filename[MAXPGPATH] = {0};
 	const char *mapped_tblspc_path;
 	pgoff_t		current_len_left = 0;
 	int			current_padding = 0;
@@ -1235,29 +1234,8 @@ ReceiveAndUnpackTarFile(PGconn *conn, PGresult *res, int rownum)
 			/*
 			 * First part of header is zero terminated filename
 			 */
-			if (!basetablespace)
-			{
-				/*
-				 * Append relfile path to --target-gp-dbid tablespace path.
-				 *
-				 * For example, copybuf can be
-				 * "<GP_TABLESPACE_VERSION_DIRECTORY>_db<dbid>/16384/16385".
-				 * We create a pointer to the dbid and relfile "/16384/16385",
-				 * construct the new tablespace with provided dbid, and append
-				 * the dbid and relfile on top.
-				 */
-				char *copybuf_dbid_relfile = strstr(copybuf, "/");
-
-				snprintf(filename, sizeof(filename), "%s%s",
-						 gp_tablespace_filename,
-						 copybuf_dbid_relfile);
-			}
-			else
-			{
-				snprintf(filename, sizeof(filename), "%s/%s", current_path,
-						 copybuf);
-			}
-
+			snprintf(filename, sizeof(filename), "%s/%s", current_path,
+					 copybuf);
 			if (filename[strlen(filename) - 1] == '/')
 			{
 				/*
@@ -1290,15 +1268,6 @@ ReceiveAndUnpackTarFile(PGconn *conn, PGresult *res, int rownum)
 							continue;
 
 						rmtree(filename, true);
-
-					}
-
-					bool is_gp_tablespace_directory = strncmp(gp_tablespace_filename, filename, strlen(filename)) == 0;
-					if (is_gp_tablespace_directory && !forceoverwrite) {
-						/*
-						 * This directory has already been created during beginning of BaseBackup().
-						 */
-						continue;
 					}
 
 					if (mkdir(filename, S_IRWXU) != 0)
