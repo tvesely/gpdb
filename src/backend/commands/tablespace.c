@@ -312,7 +312,7 @@ CreateTableSpace(CreateTableSpaceStmt *stmt)
 	 * this also helps us ensure that location is not empty or whitespace
 	 */
 	/* Reject tablespaces in the data directory. */
-	if(!is_in_data_directory(location))
+	if(is_in_data_directory(location))
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
 				 errmsg("tablespace location must not be inside the data directory")));
