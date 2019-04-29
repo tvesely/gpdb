@@ -1223,6 +1223,7 @@ sendDir(char *path, int basepathlen, bool sizeonly, List *tablespaces,
 #if defined(HAVE_READLINK) || defined(WIN32)
 			char		linkpath[MAXPGPATH];
 			int			rllen;
+			int			linkoffset = 0;
 
 			rllen = readlink(pathbuf, linkpath, sizeof(linkpath));
 			if (rllen < 0)
@@ -1236,8 +1237,17 @@ sendDir(char *path, int basepathlen, bool sizeonly, List *tablespaces,
 								pathbuf)));
 			linkpath[rllen] = '\0';
 
+			/*
+			 * Relative link target is always prefixed by "../". Remove it to
+			 * obtain a tablespace directory relative to the data directory.
+			 */
+			if (strncmp(linkpath, "../", 3) == 0)
+				linkoffset = 3;
+
 			if (!sizeonly)
-				_tarWriteHeader(pathbuf + basepathlen + 1, linkpath, &statbuf);
+				_tarWriteHeader(pathbuf + basepathlen + 1,
+								linkpath + linkoffset,
+                                &statbuf);
 			size += 512;		/* Size of the header just added */
 #else
 

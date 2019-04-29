@@ -65,6 +65,49 @@ command_ok([ 'pg_basebackup', '-D', "$tempdir/tarbackup", '-Ft',
 			 '--target-gp-dbid', '123' ],
 	'tar format');
 ok(-f "$tempdir/tarbackup/base.tar", 'backup tar was created');
+rmtree("$tempdir/tarbackup");
+
+$node->command_fails(
+	[ 'pg_basebackup', '-D', "$tempdir/backup_foo", '-Fp', "-T=/foo" ],
+	'-T with empty old directory fails');
+$node->command_fails(
+	[ 'pg_basebackup', '-D', "$tempdir/backup_foo", '-Fp', "-T/foo=" ],
+	'-T with empty new directory fails');
+$node->command_fails(
+	[
+		'pg_basebackup', '-D', "$tempdir/backup_foo", '-Fp',
+		"-T/foo=/bar=/baz"
+	],
+	'-T with multiple = fails');
+$node->command_ok(
+	[ 'pg_basebackup', '-D', "$tempdir/backup_foo", '-Fp', "-Tfoo=../bar/baz/foo" ],
+	'-T with relative old directory not rejected');
+rmtree("$tempdir/backup_foo");
+$node->command_fails(
+	[ 'pg_basebackup', '-D', "$tempdir/backup_foo", '-Fp', "-T/foo=../backup_foo/bar/baz" ],
+	'-T with new relative directory inside data dir fails');
+$node->command_ok(
+	[ 'pg_basebackup', '-D', "$tempdir/backup_foo", '-Fp', "-T/foo=/foo/bar" ],
+	'-T with new directory under nonexistent directory succeeds');
+rmtree("$tempdir/backup_foo");
+$node->command_fails(
+	[ 'pg_basebackup', '-D', "$tempdir/backup_foo", '-Fp', "-T/foo=../backup_foo/bar/baz" ],
+	'-T with new relative directory inside data dir fails');
+$node->command_fails(
+	[ 'pg_basebackup', '-D', "$tempdir/backup_foo", '-Fp', "-Tfoo" ],
+	'-T with invalid format fails');
+
+# Tar format doesn't support filenames longer than 100 bytes.
+my $superlongname = "superlongname_" . ("x" x 100);
+my $superlongpath = "$pgdata/$superlongname";
+
+open my $file, '>', "$superlongpath"
+  or die "unable to create file $superlongpath";
+close $file;
+$node->command_fails(
+	[ 'pg_basebackup', '-D', "$tempdir/tarbackup_l1", '-Ft' ],
+	'pg_basebackup tar with long name fails');
+unlink "$pgdata/$superlongname";
 
 # The following tests test symlinks. Windows doesn't have symlinks, so
 # skip on Windows.

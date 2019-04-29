@@ -187,24 +187,12 @@ tablespace_list_append(const char *arg)
 	}
 
 	/*
-	 * This check isn't absolutely necessary.  But all tablespaces are created
-	 * with absolute directories, so specifying a non-absolute path here would
-	 * just never match, possibly confusing users.  It's also good to be
-	 * consistent with the new_dir check.
+	 * Comparisons done with these values should involve similarly
+	 * canonicalized path values.  This is particularly sensitive on Windows
+	 * where path values may not necessarily use Unix slashes.
 	 */
-	if (!is_absolute_path(cell->old_dir))
-	{
-		fprintf(stderr, _("%s: old directory is not an absolute path in tablespace mapping: %s\n"),
-				progname, cell->old_dir);
-		exit(1);
-	}
-
-	if (!is_absolute_path(cell->new_dir))
-	{
-		fprintf(stderr, _("%s: new directory is not an absolute path in tablespace mapping: %s\n"),
-				progname, cell->new_dir);
-		exit(1);
-	}
+	canonicalize_path(cell->old_dir);
+	canonicalize_path(cell->new_dir);
 
 	if (tablespace_dirs.tail)
 		tablespace_dirs.tail->next = cell;
@@ -1169,22 +1157,13 @@ ReceiveAndUnpackTarFile(PGconn *conn, PGresult *res, int rownum)
 		strlcpy(current_path, basedir, sizeof(current_path));
 	else
 	{
-		strlcpy(current_path, get_tablespace_mapping(PQgetvalue(res, rownum, 1)), sizeof(current_path));
-		
-		if (target_gp_dbid < 1)
-		{
-			fprintf(stderr, _("%s: cannot restore user-defined tablespaces without the --target-gp-dbid option\n"),
-					progname);
-			disconnect_and_exit(1);
-		}
-		
-		/* 
-		 * Construct the new tablespace path using the given target gp dbid
-		 */
-		snprintf(gp_tablespace_filename, sizeof(filename), "%s/%s_db%d",
-				 current_path,
-				 GP_TABLESPACE_VERSION_DIRECTORY,
-				 target_gp_dbid);
+		const char *path = get_tablespace_mapping(PQgetvalue(res, rownum, 1));
+
+		/* Relative tablespace locations need to be prefixed by basedir. */
+		if (is_absolute_path(path))
+			strlcpy(current_path, path, sizeof(current_path));
+		else
+			join_path_components(current_path, basedir, path);
 	}
 
 	/*
@@ -1363,9 +1342,26 @@ ReceiveAndUnpackTarFile(PGconn *conn, PGresult *res, int rownum)
 					 * if there are, you can call it an undocumented feature
 					 * that you can map them too.)
 					 */
-					filename[strlen(filename) - 1] = '\0';		/* Remove trailing slash */
+					bool free_path = false;
+
+					filename[strlen(filename) - 1] = '\0';	/* Remove trailing slash */
 
 					mapped_tblspc_path = get_tablespace_mapping(&copybuf[157]);
+					if (!is_absolute_path(mapped_tblspc_path))
+					{
+						/*
+						 * Convert relative tablespace location based on data
+						 * directory into path link target based on pg_tblspc
+						 * directory. This must be in sync with
+						 * create_tablespace_directories().
+						 */
+						char *p = malloc(3 + strlen(mapped_tblspc_path) + 1);
+
+						strcpy(p, "../");
+						strcat(p, mapped_tblspc_path);
+						mapped_tblspc_path = p;
+						free_path = true;
+					}
 					if (symlink(mapped_tblspc_path, filename) != 0)
 					{
 						fprintf(stderr,
@@ -1374,6 +1370,9 @@ ReceiveAndUnpackTarFile(PGconn *conn, PGresult *res, int rownum)
 								strerror(errno));
 						disconnect_and_exit(1);
 					}
+
+					if (free_path)
+						free((void *) mapped_tblspc_path);
 				}
 				else
 				{
@@ -1897,11 +1896,25 @@ BaseBackup(void)
 		if (format == 'p' && !PQgetisnull(res, i, 1))
 		{
 			char	   *path = (char *) get_tablespace_mapping(PQgetvalue(res, i, 1));
-			char path_with_subdir[MAXPGPATH];
+			bool		freeit = false;
 
-			sprintf(path_with_subdir, "%s/%s_db%d", path, GP_TABLESPACE_VERSION_DIRECTORY, target_gp_dbid);
+			if (!is_absolute_path(path))
+			{
+				/*
+				 * Relative tablespace locations need to be converted
+				 * attaching basedir.
+				 */
+				char *p = malloc(strlen(basedir) + 1 + strlen(path) + 1);
 
-			verify_dir_is_empty_or_create(path_with_subdir);
+				join_path_components(p, basedir, path);
+				path = p;
+				freeit = true;
+			}
+
+			verify_dir_is_empty_or_create(path);
+
+			if (freeit)
+				free(path);
 		}
 	}
 
@@ -2105,6 +2118,39 @@ BaseBackup(void)
 		fprintf(stderr, "%s: base backup completed\n", progname);
 }
 
+/* Sanity check of tablespace mappings */
+static void
+check_tablespace_mappings(void)
+{
+	TablespaceListCell *cell;
+	char *absbasedir = make_absolute_path(basedir);
+
+	for (cell = tablespace_dirs.head ; cell ; cell = cell->next)
+	{
+		char pathbuf[MAXPGPATH];
+		char *path = cell->new_dir;
+
+		/*
+		 * absbasedir doesn't have trailing '/'. new_dir is already
+		 * canonicalized.
+		 */
+		if (!is_absolute_path(cell->new_dir))
+		{
+			/* but concatenated path needs re-canonicalization */
+			snprintf(pathbuf, MAXPGPATH, "%s/%s", absbasedir, cell->new_dir);
+			canonicalize_path(pathbuf);
+			path = pathbuf;
+		}
+
+		if (path_is_prefix_of_path(absbasedir, path))
+		{
+			fprintf(stderr, _("new_dir \"%s\" of mapping for \"%s\" is inside target data directory \"%s\""), cell->new_dir, cell->old_dir, absbasedir);
+			exit(1);
+		}
+	}
+
+	free(absbasedir);
+}
 
 int
 main(int argc, char **argv)
@@ -2412,6 +2458,9 @@ main(int argc, char **argv)
 			exit(1);
 		}
 	}
+
+	/* Sanity check of tablespace mapping */
+	check_tablespace_mappings();
 
 #ifndef HAVE_LIBZ
 	if (compresslevel != 0)

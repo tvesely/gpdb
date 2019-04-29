@@ -99,6 +99,25 @@ static void create_tablespace_directories(const char *location,
 							  const Oid tablespaceoid);
 static bool destroy_tablespace_directories(Oid tablespaceoid, bool redo);
 
+/*
+ * Check if the path is in the data directory strictly.
+ */
+static bool
+is_in_data_directory(const char *path)
+{
+	char   *tmp_path = make_absolute_path(path);
+	char    tmp_datadir[MAXPGPATH];
+	bool	in_datadir;
+
+	Assert (tmp_path != NULL);
+	strlcpy(tmp_datadir, DataDir, MAXPGPATH);
+	canonicalize_path(tmp_datadir);
+
+	in_datadir = path_is_prefix_of_path(tmp_datadir, tmp_path);
+	free(tmp_path);
+
+	return in_datadir;
+}
 
 /*
  * Each database using a table space is isolated into its own name space
@@ -292,17 +311,20 @@ CreateTableSpace(CreateTableSpaceStmt *stmt)
 	 *
 	 * this also helps us ensure that location is not empty or whitespace
 	 */
-	if (!is_absolute_path(location))
+	/* Reject tablespaces in the data directory. */
+	if(!is_in_data_directory(location))
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
-				 errmsg("tablespace location must be an absolute path")));
+				 errmsg("tablespace location must not be inside the data directory")));
 
 	/*
 	 * Check that location isn't too long. Remember that we're going to append
-	 * '<GP_TABLESPACE_VERSION_DIRECTORY>/<dboid>/<relid>_<fork>.<nnn>'.  FYI, we never actually
-	 * reference the whole path here, but mkdir() uses the first two parts.
+	 * '<GP_TABLESPACE_VERSION_DIRECTORY>/<dboid>/<relid>_<fork>.<nnn>'.  In the
+	 * relative path case, we attach "../ at the beginning of the path. FYI, we
+	 * never actually reference the whole path here, but mkdir() uses the first
+	 * two parts.
 	 */
-	if (strlen(location) + 1 + strlen(GP_TABLESPACE_VERSION_DIRECTORY) + 1 +
+	if (3 + strlen(location) + 1 + strlen(GP_TABLESPACE_VERSION_DIRECTORY) + 1 +
 	  OIDCHARS + 1 + OIDCHARS + 1 + FORKNAMECHARS + 1 + OIDCHARS > MAXPGPATH)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
@@ -622,8 +644,9 @@ static void
 create_tablespace_directories(const char *location, const Oid tablespaceoid)
 {
 	char	   *linkloc;
+	char	   *linktarget;
 	char	   *location_with_version_dir;
-	struct stat st;
+ 	struct stat st;
 
 	linkloc = psprintf("pg_tblspc/%u", tablespaceoid);
 	location_with_version_dir = psprintf("%s/%s", location,
@@ -713,12 +736,22 @@ create_tablespace_directories(const char *location, const Oid tablespaceoid)
 
 	/*
 	 * Create the symlink under PGDATA
+	 * Relative tablespace location is based on PGDATA directory. The symlink
+	 * is created in PGDATA/pg_tblspc. So adjust relative paths by attaching
+	 * "../" at the head.
 	 */
-	if (symlink(location, linkloc) < 0)
+	if (is_absolute_path(location))
+		linktarget = psprintf("%s", location);
+	else
+		linktarget = psprintf("../%s", location);
+
+	if (symlink(linktarget, linkloc) < 0)
 		ereport(ERROR,
 				(errcode_for_file_access(),
 				 errmsg("could not create symbolic link \"%s\": %m",
 						linkloc)));
+
+	pfree(linktarget);
 
 	pfree(linkloc);
 	pfree(location_with_version_dir);
