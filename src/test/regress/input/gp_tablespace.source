@@ -147,6 +147,30 @@ SELECT gp_segment_id,
        END AS tblspc_loc
 FROM gp_tablespace_location((SELECT oid FROM pg_tablespace WHERE spcname='testspace_otherloc'));
 
+-- Create a tablespace with an existing GP_TABLESPACE_VERSION_DIRECTORY for
+-- another version of GPDB.
+CREATE TABLESPACE testspace_existing_version_dir LOCATION '@testtablespace@_existing_version_dir';
+
+SELECT * FROM
+  (SELECT pg_ls_dir('pg_tblspc/' || oid) AS versiondirs
+    FROM pg_tablespace
+    WHERE spcname = 'testspace_existing_version_dir'
+  ) a
+WHERE a.versiondirs != get_tablespace_version_directory_name();
+
+SELECT count(*) FROM
+  (SELECT pg_ls_dir('pg_tblspc/' || oid) AS versiondirs
+    FROM pg_tablespace
+    WHERE spcname = 'testspace_existing_version_dir'
+  ) a
+WHERE a.versiondirs = get_tablespace_version_directory_name();
+
+-- Do not drop the dbid directory, nor the existing version directory if you
+-- drop this tablespace
+DROP TABLESPACE testspace_existing_version_dir;
+
+\! ls @testtablespace@_existing_version_dir/*;
+
 -- Test alter tablespace: PG does not seem to test these.
 
 -- test SET & OWNER
