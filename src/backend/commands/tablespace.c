@@ -913,14 +913,48 @@ remove_symlink:
 	}
 	else
 	{
+		/*
+		 * The symbolic link exists, so remove the dbid directory if it is
+		 * empty. During replay, this directory may have been previously
+		 * removed, so it's ok if it isn't there. Similar logic here to
+		 *
+		 */
 		link_target_dir[rllen] = '\0';
-		if(directory_is_empty(link_target_dir) && rmdir(link_target_dir) < 0)
-			ereport(redo ? LOG : ERROR,
-				(errcode_for_file_access(),
-					errmsg("could not remove directory \"%s\": %m",
-						link_target_dir)));
-	}
+		dirdesc = AllocateDir(link_target_dir);
+		if (dirdesc == NULL)
+		{
+			if (errno == ENOENT)
+			{
+				if (!redo)
+					ereport(WARNING,
+						(errcode_for_file_access(),
+							errmsg("could not open directory \"%s\": %m",
+								linkloc_with_version_dir)));
+				/* The symlink might still exist, so go try to remove it */
+				goto remove_symlink;
+			}
+			else if (redo)
+			{
+				/* in redo, just log other types of error */
+				ereport(LOG,
+						(errcode_for_file_access(),
+							errmsg("could not open directory \"%s\": %m",
+								linkloc_with_version_dir)));
+				pfree(linkloc_with_version_dir);
+				return false;
+			}
+		}
+		else
+		{
+			if(directory_is_empty(link_target_dir) && rmdir(link_target_dir) < 0)
+				ereport(redo ? LOG : ERROR,
+					(errcode_for_file_access(),
+						errmsg("could not remove directory \"%s\": %m",
+							link_target_dir)));
+		}
 
+		FreeDir(dirdesc);
+	}
 
 	if (lstat(linkloc, &st) == 0 && S_ISDIR(st.st_mode))
 	{
