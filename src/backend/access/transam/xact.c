@@ -32,6 +32,7 @@
 #include "catalog/oid_dispatch.h"
 #include "catalog/storage.h"
 #include "commands/async.h"
+#include "commands/dbcommands.h"
 #include "commands/resgroupcmds.h"
 #include "commands/tablecmds.h"
 #include "commands/trigger.h"
@@ -1265,6 +1266,8 @@ RecordTransactionCommit(void)
 	TransactionId latestXid = InvalidTransactionId;
 	int			nrels;
 	RelFileNodeWithStorageType *rels;
+	DbDirNode	*deldbs;
+	int			ndeldbs;
 	int			nchildren;
 	TransactionId *children;
 	int			nmsgs = 0;
@@ -1287,6 +1290,7 @@ RecordTransactionCommit(void)
 
 	/* Get data needed for commit record */
 	nrels = smgrGetPendingDeletes(true, &rels);
+	ndeldbs = getPendingDbDeletes(true, &deldbs);
 	nchildren = xactGetCommittedChildren(&children);
 	if (XLogStandbyInfoActive())
 		nmsgs = xactGetCommittedInvalidationMessages(&invalMessages,
@@ -1387,10 +1391,10 @@ RecordTransactionCommit(void)
 		 * distributed commit is so expensive anyway, that this optimization
 		 * hardly matters.)
 		 */
-		if (nrels > 0 || nmsgs > 0 || RelcacheInitFileInval || forceSyncCommit ||
-			XLogLogicalInfoActive() || isDtxPrepared)
+		if (nrels > 0 || ndeldbs > 0 || nmsgs > 0 || RelcacheInitFileInval ||
+			forceSyncCommit || XLogLogicalInfoActive() || isDtxPrepared)
 		{
-			XLogRecData rdata[5];
+			XLogRecData rdata[6];
 			int			lastrdata = 0;
 			xl_xact_commit xlrec;
 
@@ -1408,6 +1412,7 @@ RecordTransactionCommit(void)
 
 			xlrec.xact_time = xactStopTimestamp;
 			xlrec.nrels = nrels;
+			xlrec.ndeldbs = ndeldbs;
 			xlrec.nsubxacts = nchildren;
 			xlrec.nmsgs = nmsgs;
 			rdata[0].data = (char *) (&xlrec);
@@ -1440,6 +1445,15 @@ RecordTransactionCommit(void)
 				rdata[3].buffer = InvalidBuffer;
 				lastrdata = 3;
 			}
+			/* dump dbs to delete */
+			if (ndeldbs > 0)
+			{
+				rdata[lastrdata].next = &(rdata[4]);
+				rdata[4].data = (char *) deldbs;
+				rdata[4].len = ndeldbs * sizeof(DbDirNode);
+				rdata[4].buffer = InvalidBuffer;
+				lastrdata = 4;
+			}
 			rdata[lastrdata].next = NULL;
 
 			SIMPLE_FAULT_INJECTOR(OnePhaseTransactionCommit);
@@ -1449,11 +1463,11 @@ RecordTransactionCommit(void)
 				/* add global transaction information */
 				getDtxLogInfo(&gxact_log);
 
-				rdata[lastrdata].next = &(rdata[4]);
-				rdata[4].data = (char *) &gxact_log;
-				rdata[4].len = sizeof(gxact_log);
-				rdata[4].buffer = InvalidBuffer;
-				rdata[4].next = NULL;
+				rdata[lastrdata].next = &(rdata[5]);
+				rdata[5].data = (char *) &gxact_log;
+				rdata[5].len = sizeof(gxact_log);
+				rdata[5].buffer = InvalidBuffer;
+				rdata[5].next = NULL;
 
 				insertingDistributedCommitted();
 
@@ -1816,7 +1830,9 @@ RecordTransactionAbort(bool isSubXact)
 	RelFileNodeWithStorageType *rels;
 	int			nchildren;
 	TransactionId *children;
-	XLogRecData rdata[3];
+	DbDirNode	*deldbs;
+	int			ndeldbs;
+	XLogRecData rdata[4];
 	int			lastrdata = 0;
 	xl_xact_abort xlrec;
 	bool		isQEReader;
@@ -1867,6 +1883,7 @@ RecordTransactionAbort(bool isSubXact)
 
 	/* Fetch the data we need for the abort record */
 	nrels = smgrGetPendingDeletes(false, &rels);
+	ndeldbs = getPendingDbDeletes(false, &deldbs);
 	nchildren = xactGetCommittedChildren(&children);
 
 	/* XXX do we really need a critical section here? */
@@ -1881,6 +1898,7 @@ RecordTransactionAbort(bool isSubXact)
 		xlrec.xact_time = xactStopTimestamp;
 	}
 	xlrec.nrels = nrels;
+	xlrec.ndeldbs = ndeldbs;
 	xlrec.nsubxacts = nchildren;
 	rdata[0].data = (char *) (&xlrec);
 	rdata[0].len = MinSizeOfXactAbort;
@@ -1902,6 +1920,15 @@ RecordTransactionAbort(bool isSubXact)
 		rdata[2].len = nchildren * sizeof(TransactionId);
 		rdata[2].buffer = InvalidBuffer;
 		lastrdata = 2;
+	}
+	/* dump dbs to delete */
+	if (ndeldbs > 0)
+	{
+		rdata[lastrdata].next = &(rdata[3]);
+		rdata[3].data = (char *) deldbs;
+		rdata[3].len = ndeldbs * sizeof(DbDirNode);
+		rdata[3].buffer = InvalidBuffer;
+		lastrdata = 3;
 	}
 	rdata[lastrdata].next = NULL;
 
@@ -2776,6 +2803,7 @@ CommitTransaction(void)
 	 * attempt to access affected files.
 	 */
 	smgrDoPendingDeletes(true);
+	doPendingDbDeletes(true);
 
 	AtEOXact_AppendOnly();
 	AtCommit_Notify();
@@ -3282,6 +3310,7 @@ AbortTransaction(void)
 							 RESOURCE_RELEASE_AFTER_LOCKS,
 							 false, true);
 		smgrDoPendingDeletes(false);
+		doPendingDbDeletes(false);
 
 		AtEOXact_AppendOnly();
 		AtEOXact_GUC(false, 1);
@@ -5950,17 +5979,6 @@ xactGetCommittedChildren(TransactionId **ptr)
 /*
  *	XLOG support routines
  */
-static TMGXACT_LOG *
-xact_get_distributed_info_from_commit(xl_xact_commit *xlrec)
-{
-	TransactionId *xacts;
-	SharedInvalidationMessage *msgs;
-
-	xacts = (TransactionId *) &xlrec->xnodes[xlrec->nrels];
-	msgs = (SharedInvalidationMessage *) &xacts[xlrec->nsubxacts];
-
-	return (TMGXACT_LOG *) &msgs[xlrec->nmsgs];
-}
 
 /*
  * Before 9.0 this was a fairly short function, but now it performs many
@@ -5971,6 +5989,7 @@ xact_redo_commit_internal(TransactionId xid, XLogRecPtr lsn,
 						  TransactionId *sub_xids, int nsubxacts,
 						  SharedInvalidationMessage *inval_msgs, int nmsgs,
 						  RelFileNodeWithStorageType *xnodes, int nrels,
+						  DbDirNode *deldbs, int ndeldbs,
 						  Oid dbId, Oid tsId,
 						  uint32 xinfo,
 						  DistributedTransactionId distribXid,
@@ -6083,6 +6102,12 @@ xact_redo_commit_internal(TransactionId xid, XLogRecPtr lsn,
 		DropRelationFiles(xnodes, nrels, true);
 	}
 
+	if (ndeldbs > 0)
+	{
+		XLogFlush(lsn);
+		DropDatabaseDirectories(deldbs, ndeldbs, true);
+	}
+
 	/*
 	 * We issue an XLogFlush() for the same reason we emit ForceSyncCommit()
 	 * in normal operation. For example, in CREATE DATABASE, we copy all files
@@ -6111,15 +6136,18 @@ xact_redo_commit(xl_xact_commit *xlrec,
 {
 	TransactionId *subxacts;
 	SharedInvalidationMessage *inval_msgs;
-
+	DbDirNode *deldbs;
 	/* subxid array follows relfilenodes */
 	subxacts = (TransactionId *) &(xlrec->xnodes[xlrec->nrels]);
 	/* invalidation messages array follows subxids */
 	inval_msgs = (SharedInvalidationMessage *) &(subxacts[xlrec->nsubxacts]);
+	/* database dir nodes to be deleted follow the invalidation messages */
+	deldbs = (DbDirNode *) &(inval_msgs[xlrec->nmsgs]);
 
 	xact_redo_commit_internal(xid, lsn, subxacts, xlrec->nsubxacts,
 							  inval_msgs, xlrec->nmsgs,
 							  xlrec->xnodes, xlrec->nrels,
+							  deldbs, xlrec->ndeldbs,
 							  xlrec->dbId,
 							  xlrec->tsId,
 							  xlrec->xinfo,
@@ -6137,6 +6165,7 @@ xact_redo_commit_compact(xl_xact_commit_compact *xlrec,
 	xact_redo_commit_internal(xid, lsn, xlrec->subxacts, xlrec->nsubxacts,
 							  NULL, 0,	/* inval msgs */
 							  NULL, 0,	/* relfilenodes */
+							  NULL, 0,	/* deldbs */
 							  InvalidOid,		/* dbId */
 							  InvalidOid,		/* tsId */
 							  0,		/* xinfo */
@@ -6156,19 +6185,20 @@ xact_redo_commit_compact(xl_xact_commit_compact *xlrec,
 static void
 xact_redo_distributed_commit(xl_xact_commit *xlrec, TransactionId xid)
 {
+	TransactionId *sub_xids;
+	SharedInvalidationMessage *msgs;
+	DbDirNode *deldbs;
 	TMGXACT_LOG *gxact_log;
-	
+
+	TransactionId max_xid;
 	DistributedTransactionTimeStamp	distribTimeStamp;
 	DistributedTransactionId 		distribXid;
-
-	TransactionId *sub_xids;
-	TransactionId max_xid;
 	int			i;
 
-	/* 
-	 * Get the global transaction information first.
-	 */
-	gxact_log = xact_get_distributed_info_from_commit(xlrec);
+	sub_xids = (TransactionId *) &xlrec->xnodes[xlrec->nrels];
+	msgs = (SharedInvalidationMessage *) &sub_xids[xlrec->nsubxacts];
+	deldbs = (DbDirNode *) &msgs[xlrec->nmsgs];
+	gxact_log = (TMGXACT_LOG *) &deldbs[xlrec->ndeldbs];
 
 	/*
 	 * Crack open the gid to get the timestamp.
@@ -6208,8 +6238,6 @@ xact_redo_distributed_commit(xl_xact_commit *xlrec, TransactionId xid)
 		 */
 
 		/* Mark the transaction committed in pg_clog */
-		sub_xids = (TransactionId *) &xlrec->xnodes[xlrec->nrels];
-
 		/* Add the committed subtransactions to the DistributedLog, too. */
 		DistributedLog_SetCommittedTree(xid, xlrec->nsubxacts, sub_xids,
 										distribTimeStamp,
@@ -6232,16 +6260,8 @@ xact_redo_distributed_commit(xl_xact_commit *xlrec, TransactionId xid)
 			TransactionIdAdvance(ShmemVariableCache->nextXid);
 		}
 
-		for (i = 0; i < xlrec->nrels; i++)
-		{
-			SMgrRelation srel = smgropen(xlrec->xnodes[i].node, InvalidBackendId);
-			ForkNumber	fork;
-
-			for (fork = 0; fork <= MAX_FORKNUM; fork++)
-				XLogDropRelation(xlrec->xnodes[i].node, fork);
-			smgrdounlink(srel, true, xlrec->xnodes[i].relstorage);
-			smgrclose(srel);
-		}
+		DropRelationFiles(xlrec->xnodes, xlrec->nrels, true);
+		DropDatabaseDirectories(deldbs, xlrec->ndeldbs, true);
 	}
 
 	/*
@@ -6255,9 +6275,11 @@ xact_redo_abort(xl_xact_abort *xlrec, TransactionId xid)
 {
 	TransactionId *sub_xids;
 	TransactionId max_xid;
+	DbDirNode *deldbs;
 
 	sub_xids = (TransactionId *) &(xlrec->xnodes[xlrec->nrels]);
 	max_xid = TransactionIdLatest(xid, xlrec->nsubxacts, sub_xids);
+	deldbs = (DbDirNode *) &(sub_xids[xlrec->nsubxacts]);
 
 	/*
 	 * Make sure nextXid is beyond any XID mentioned in the record.
@@ -6314,6 +6336,7 @@ xact_redo_abort(xl_xact_abort *xlrec, TransactionId xid)
 
 	/* Make sure files supposed to be dropped are dropped */
 	DropRelationFiles(xlrec->xnodes, xlrec->nrels, true);
+	DropDatabaseDirectories(deldbs, xlrec->ndeldbs, true);
 }
 
 static void

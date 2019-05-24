@@ -1330,6 +1330,8 @@ movedb(const char *dbname, const char *tblspcname)
 			(void) XLogInsert(RM_DBASE_ID, XLOG_DBASE_CREATE, rdata);
 		}
 
+		ScheduleDbDirDelete(db_id, dst_tblspcoid, false);
+
 		/*
 		 * Update the database's pg_database tuple
 		 */
@@ -1428,52 +1430,9 @@ movedb(const char *dbname, const char *tblspcname)
 	 * register the db_id with pending deletes list to schedule removing database
 	 * directory on transaction commit.
 	 */
-	DatabaseDropStorage(db_id, src_tblspcoid);
+	ScheduleDbDirDelete(db_id, src_tblspcoid, true);
 
 	SIMPLE_FAULT_INJECTOR(InsideMoveDbTransaction);
-}
-
-/*
- * This functions contains non-catalog modifications to be performed for movedb().
- * Its called after successfully marking the transaction as committed via pending
- * deletes.
- */
-void
-DropDatabaseDirectory(Oid db_id, Oid tblspcoid)
-{
-	char *dbpath = GetDatabasePath(db_id, tblspcoid);
-	/*
-	 * Remove files from the old tablespace
-	 */
-	if (!rmtree(dbpath, true))
-		ereport(WARNING,
-				(errmsg("some useless files may be left behind in old database directory \"%s\"",
-						dbpath)));
-
-	/*
-	 * Record the filesystem change in XLOG
-	 */
-	{
-		xl_dbase_drop_rec xlrec;
-		XLogRecData rdata[1];
-
-		xlrec.db_id = db_id;
-		xlrec.tablespace_id = tblspcoid;
-
-		rdata[0].data = (char *) &xlrec;
-		rdata[0].len = sizeof(xl_dbase_drop_rec);
-		rdata[0].buffer = InvalidBuffer;
-		rdata[0].next = NULL;
-
-		(void) XLogInsert(RM_DBASE_ID, XLOG_DBASE_DROP, rdata);
-	}
-
-	if (Gp_role == GP_ROLE_DISPATCH)
-	{
-		/* Now it's safe to release the database lock */
-		UnlockSharedObjectForSession(DatabaseRelationId, db_id, 0,
-									AccessExclusiveLock);
-	}
 }
 
 /* Error cleanup callback for movedb */

@@ -59,10 +59,20 @@ typedef struct PendingRelDelete
 	bool		atCommit;		/* T=delete at commit; F=delete at abort */
 	int			nestLevel;		/* xact nesting level of request */
 	struct PendingRelDelete *next;		/* linked-list link */
-	bool		dbOperation;	/* T=operate on database; F=operate on relation */
 } PendingRelDelete;
 
 static PendingRelDelete *pendingDeletes = NULL; /* head of linked list */
+
+typedef struct PendingDbDelete
+{
+	DbDirNode	dbDirNode;		/* database that needs to be deleted */
+	bool		atCommit;		/* T=delete at commit; F=delete at abort */
+	struct PendingDbDelete *next;		/* linked-list link */
+} PendingDbDelete;
+
+static PendingDbDelete *pendingDbDeletes = NULL; /* head of linked list */
+
+static void DropDatabaseDirectory(Oid db_id, Oid tblspcoid, bool isRedo);
 
 /*
  * RelationCreateStorage
@@ -116,7 +126,6 @@ RelationCreateStorage(RelFileNode rnode, char relpersistence, char relstorage)
 	pending->backend = backend;
 	pending->atCommit = false;	/* delete if abort */
 	pending->nestLevel = GetCurrentTransactionNestLevel();
-	pending->dbOperation = false;
 	pending->next = pendingDeletes;
 	pendingDeletes = pending;
 }
@@ -161,7 +170,6 @@ RelationDropStorage(Relation rel)
 	pending->backend = rel->rd_backend;
 	pending->atCommit = true;	/* delete if commit */
 	pending->nestLevel = GetCurrentTransactionNestLevel();
-	pending->dbOperation = false;
 	pending->next = pendingDeletes;
 	pendingDeletes = pending;
 
@@ -179,32 +187,23 @@ RelationDropStorage(Relation rel)
 }
 
 /*
- * DatabaseDropStorage
- *		Schedule unlinking of database directory at transaction commit.
+ * ScheduleDbDirDelete
+ * 		Schedule dboid dir removal at transaction commit/abort
  */
+
 void
-DatabaseDropStorage(Oid db_id, Oid tablespace_id)
+ScheduleDbDirDelete(Oid db_id, Oid tablespace_oid, bool forCommit)
 {
-	/*
-	 * Drop/Alter database cannot be part of a transaction, therefore
-	 * pendingDeletes should be empty
-	 */
-	Assert(pendingDeletes == NULL);
-	PendingRelDelete *pending;
+	PendingDbDelete *pending;
 
 	/* Add the relation to the list of stuff to delete at commit */
-	pending = (PendingRelDelete *)
-		MemoryContextAlloc(TopMemoryContext, sizeof(PendingRelDelete));
-	pending->relnode.node.spcNode = tablespace_id;
-	pending->relnode.node.dbNode = db_id;
-	pending->relnode.node.relNode = InvalidOid;
-
-	pending->backend = InvalidBackendId;
-	pending->atCommit = true;	/* delete if commit */
-	pending->nestLevel = GetCurrentTransactionNestLevel();
-	pending->dbOperation = true;
-	pending->next = pendingDeletes;
-	pendingDeletes = pending;
+	pending = (PendingDbDelete *)
+		MemoryContextAlloc(TopMemoryContext, sizeof(PendingDbDelete));
+	pending->atCommit = forCommit;
+	pending->dbDirNode = (DbDirNode)
+		{.tablespace = tablespace_oid, .database = db_id};
+	pending->next = pendingDbDeletes;
+	pendingDbDeletes = pending;
 }
 
 /*
@@ -373,16 +372,6 @@ smgrDoPendingDeletes(bool isCommit)
 			/* do deletion if called for */
 			if (pending->atCommit == isCommit)
 			{
-				if (pending->dbOperation)
-				{
-					Assert(next == NULL);
-					Assert(pending->relnode.node.relNode == InvalidOid);
-					DropDatabaseDirectory(pending->relnode.node.dbNode,
-										pending->relnode.node.spcNode);
-					pfree(pending);
-					return;
-				}
-
 				SMgrRelation srel;
 				srel = smgropen(pending->relnode.node, pending->backend);
 
@@ -456,8 +445,7 @@ smgrGetPendingDeletes(bool forCommit, RelFileNodeWithStorageType **ptr)
 	nrels = 0;
 	for (pending = pendingDeletes; pending != NULL; pending = pending->next)
 	{
-		if (pending->nestLevel >= nestLevel && pending->atCommit == forCommit &&
-			!pending->dbOperation
+		if (pending->nestLevel >= nestLevel && pending->atCommit == forCommit
 			/*
 			 * Greenplum allows transactions that access temporary tables to be
 			 * prepared.
@@ -475,8 +463,7 @@ smgrGetPendingDeletes(bool forCommit, RelFileNodeWithStorageType **ptr)
 	*ptr = rptr;
 	for (pending = pendingDeletes; pending != NULL; pending = pending->next)
 	{
-		if (pending->nestLevel >= nestLevel && pending->atCommit == forCommit &&
-			!pending->dbOperation
+		if (pending->nestLevel >= nestLevel && pending->atCommit == forCommit
 			/*
 			 * Keep this loop condition identical to above
 			 */
@@ -490,6 +477,92 @@ smgrGetPendingDeletes(bool forCommit, RelFileNodeWithStorageType **ptr)
 	return nrels;
 }
 
+int
+getPendingDbDeletes(bool forCommit, DbDirNode **ptr)
+{
+	int			ndbs;
+	DbDirNode	*dbptr;
+	PendingDbDelete *pending;
+
+	ndbs = 0;
+	for (pending = pendingDbDeletes; pending != NULL; pending = pending->next)
+	{
+		if (pending->atCommit == forCommit)
+			ndbs++;
+	}
+	if (ndbs == 0)
+	{
+		*ptr = NULL;
+		return 0;
+	}
+	dbptr = (DbDirNode *) palloc(ndbs * sizeof(DbDirNode));
+	*ptr = dbptr;
+	for (pending = pendingDbDeletes; pending != NULL; pending = pending->next)
+	{
+		if (pending->atCommit == forCommit)
+		{
+			*dbptr = pending->dbDirNode;
+			dbptr++;
+		}
+	}
+	return ndbs;
+}
+
+void
+doPendingDbDeletes(bool isCommit)
+{
+	PendingDbDelete *pending;
+	PendingDbDelete *next;
+
+	for (pending = pendingDbDeletes; pending != NULL; pending = next)
+	{
+		next = pending->next;
+		/* unlink list entry first, so we don't retry on failure */
+		pendingDbDeletes = next;
+		/* do deletion if called for */
+		if (pending->atCommit == isCommit)
+		{
+			DropDatabaseDirectory(pending->dbDirNode.database,
+								  pending->dbDirNode.tablespace,
+								  false);
+			pfree(pending);
+			return;
+		}
+		/* must explicitly free the list entry */
+		pfree(pending);
+	}
+}
+
+/*
+ * This functions contains non-catalog modifications to be performed for movedb().
+ * Its called after successfully marking the transaction as committed via pending
+ * deletes.
+ */
+void
+DropDatabaseDirectories(DbDirNode *deldbs, int ndeldbs, bool isRedo)
+{
+	int i;
+	for (i = 0; i < ndeldbs; i++)
+	{
+		DropDatabaseDirectory(deldbs[i].database, deldbs[i].tablespace, isRedo);
+	}
+}
+
+static void
+DropDatabaseDirectory(Oid db_id, Oid tblspcoid, bool isRedo)
+{
+	char *dbpath = GetDatabasePath(db_id, tblspcoid);
+	/*
+	 * Remove files from the old tablespace
+	 */
+	if (!rmtree(dbpath, true))
+		ereport(WARNING,
+				(errmsg("some useless files may be left behind in old database directory \"%s\"",
+						dbpath)));
+
+	if (isRedo)
+		XLogDropDatabase(db_id);
+}
 /*
  *	PostPrepare_smgr -- Clean up after a successful PREPARE
  *
@@ -509,6 +582,17 @@ PostPrepare_smgr(void)
 		pendingDeletes = next;
 		/* must explicitly free the list entry */
 		pfree(pending);
+	}
+
+	PendingDbDelete *pendingDbDelete;
+	PendingDbDelete *nextDbDelete;
+
+	for (pendingDbDelete = pendingDbDeletes; pendingDbDelete != NULL; pendingDbDelete = nextDbDelete)
+	{
+		nextDbDelete = pendingDbDelete->next;
+		pendingDbDeletes = nextDbDelete;
+		/* must explicitly free the list entry */
+		pfree(pendingDbDelete);
 	}
 }
 

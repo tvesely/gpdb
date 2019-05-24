@@ -44,9 +44,7 @@ NOTICE:  Success:  (seg0 10.64.5.114:25432 pid=88313)
 ALTER DATABASE alter_db_2 SET TABLESPACE alter_tblspc_2;
 ERROR:  fault triggered, fault name:'inside_move_db_transaction' fault type:'error'  (seg0 10.64.5.114:25432 pid=88313)
 -- Then all the database files from QD and all QEs should continue to use the
--- old tablespace. The physical files may still exist on the new tablespace for
--- the segments that didn't fail, but the pg_class catalog entries point to the
--- old tablespace
+-- old tablespace and there should be no files in the new tablespace.
 \c alter_db_2
 SELECT count(*) from tbl_2;
  count 
@@ -84,8 +82,45 @@ SELECT gp_segment_id, substring(filepath FOR 5) AS filepath FROM rel_filepaths('
              2 | base/
 (4 rows)
 
--- Cleanup
 \c regression
+CREATE OR REPLACE FUNCTION get_tablespace_version_directory_name()
+  RETURNS TEXT
+AS '@abs_builddir@/regress.so', 'get_tablespace_version_directory_name'
+  LANGUAGE C;
+CREATE OR REPLACE LANGUAGE plpythonu;
+CREATE FUNCTION list_tablespace_contents_all_dbids(version_dir_name text) RETURNS TABLE (dbid text, dboid_dirs text[])
+VOLATILE LANGUAGE plpythonu
+AS
+$fn$
+import os
+
+dboid_dirs = []
+for dbid_dir in os.listdir("@abs_builddir@/testtablespace/alter_tblspc_2"):
+  dboid_dirs.append((dbid_dir, os.listdir("@abs_builddir@/testtablespace/alter_tblspc_2/" + dbid_dir + '/' + version_dir_name)))
+
+return dboid_dirs$fn$;
+-- Increase the likelihood that mirrors have applied the filesystem changes
+SELECT pg_sleep(5);
+ pg_sleep 
+----------
+ 
+(1 row)
+
+SELECT * FROM list_tablespace_contents_all_dbids(get_tablespace_version_directory_name());
+ dbid | dboid_dirs 
+------+------------
+ 7    | {}
+ 6    | {}
+ 1    | {}
+ 8    | {}
+ 4    | {}
+ 3    | {}
+ 2    | {}
+ 5    | {}
+(8 rows)
+
+
+-- Cleanup
 SELECT gp_inject_fault('inside_move_db_transaction', 'reset', dbid) FROM gp_segment_configuration WHERE role = 'p' AND content = 0;
 NOTICE:  Success:  (seg0 10.64.5.114:25432 pid=88322)
  gp_inject_fault 

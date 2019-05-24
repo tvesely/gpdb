@@ -16,20 +16,25 @@
 
 #include "storage/block.h"
 #include "storage/relfilenode.h"
+#include "storage/dbdirnode.h"
 #include "utils/relcache.h"
 
 extern void RelationCreateStorage(RelFileNode rnode, char relpersistence, char relstorage);
 extern void RelationDropStorage(Relation rel);
-extern void DatabaseDropStorage(Oid db_id, Oid dsttablespace);
+extern void ScheduleDbDirDelete(Oid db_id, Oid tablespace_oid, bool forCommit);
 extern void RelationPreserveStorage(RelFileNode rnode, bool atCommit);
 extern void RelationTruncate(Relation rel, BlockNumber nblocks);
+
+extern void DropDatabaseDirectories(DbDirNode *deldbs, int ndeldbs, bool isRedo);
 
 /*
  * These functions used to be in storage/smgr/smgr.c, which explains the
  * naming
  */
 extern void smgrDoPendingDeletes(bool isCommit);
+extern void doPendingDbDeletes(bool isCommit);
 extern int	smgrGetPendingDeletes(bool forCommit, RelFileNodeWithStorageType **ptr);
+extern int	getPendingDbDeletes(bool forCommit, DbDirNode **ptr);
 extern void AtSubCommit_smgr(void);
 extern void AtSubAbort_smgr(void);
 extern void PostPrepare_smgr(void);
