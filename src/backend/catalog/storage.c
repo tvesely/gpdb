@@ -63,17 +63,6 @@ typedef struct PendingRelDelete
 
 static PendingRelDelete *pendingDeletes = NULL; /* head of linked list */
 
-typedef struct PendingDbDelete
-{
-	DbDirNode	dbDirNode;		/* database that needs to be deleted */
-	bool		atCommit;		/* T=delete at commit; F=delete at abort */
-	struct PendingDbDelete *next;		/* linked-list link */
-} PendingDbDelete;
-
-static PendingDbDelete *pendingDbDeletes = NULL; /* head of linked list */
-
-static void DropDatabaseDirectory(Oid db_id, Oid tblspcoid, bool isRedo);
-
 /*
  * RelationCreateStorage
  *		Create physical storage for a relation.
@@ -184,26 +173,6 @@ RelationDropStorage(Relation rel)
 	 */
 
 	RelationCloseSmgr(rel);
-}
-
-/*
- * ScheduleDbDirDelete
- * 		Schedule dboid dir removal at transaction commit/abort
- */
-
-void
-ScheduleDbDirDelete(Oid db_id, Oid tablespace_oid, bool forCommit)
-{
-	PendingDbDelete *pending;
-
-	/* Add the relation to the list of stuff to delete at commit */
-	pending = (PendingDbDelete *)
-		MemoryContextAlloc(TopMemoryContext, sizeof(PendingDbDelete));
-	pending->atCommit = forCommit;
-	pending->dbDirNode = (DbDirNode)
-		{.tablespace = tablespace_oid, .database = db_id};
-	pending->next = pendingDbDeletes;
-	pendingDbDeletes = pending;
 }
 
 /*
@@ -476,93 +445,6 @@ smgrGetPendingDeletes(bool forCommit, RelFileNodeWithStorageType **ptr)
 	}
 	return nrels;
 }
-
-int
-getPendingDbDeletes(bool forCommit, DbDirNode **ptr)
-{
-	int			ndbs;
-	DbDirNode	*dbptr;
-	PendingDbDelete *pending;
-
-	ndbs = 0;
-	for (pending = pendingDbDeletes; pending != NULL; pending = pending->next)
-	{
-		if (pending->atCommit == forCommit)
-			ndbs++;
-	}
-	if (ndbs == 0)
-	{
-		*ptr = NULL;
-		return 0;
-	}
-	dbptr = (DbDirNode *) palloc(ndbs * sizeof(DbDirNode));
-	*ptr = dbptr;
-	for (pending = pendingDbDeletes; pending != NULL; pending = pending->next)
-	{
-		if (pending->atCommit == forCommit)
-		{
-			*dbptr = pending->dbDirNode;
-			dbptr++;
-		}
-	}
-	return ndbs;
-}
-
-void
-doPendingDbDeletes(bool isCommit)
-{
-	PendingDbDelete *pending;
-	PendingDbDelete *next;
-
-	for (pending = pendingDbDeletes; pending != NULL; pending = next)
-	{
-		next = pending->next;
-		/* unlink list entry first, so we don't retry on failure */
-		pendingDbDeletes = next;
-		/* do deletion if called for */
-		if (pending->atCommit == isCommit)
-		{
-			DropDatabaseDirectory(pending->dbDirNode.database,
-								  pending->dbDirNode.tablespace,
-								  false);
-			pfree(pending);
-			return;
-		}
-		/* must explicitly free the list entry */
-		pfree(pending);
-	}
-}
-
-/*
- * This functions contains non-catalog modifications to be performed for movedb().
- * Its called after successfully marking the transaction as committed via pending
- * deletes.
- */
-void
-DropDatabaseDirectories(DbDirNode *deldbs, int ndeldbs, bool isRedo)
-{
-	int i;
-	for (i = 0; i < ndeldbs; i++)
-	{
-		DropDatabaseDirectory(deldbs[i].database, deldbs[i].tablespace, isRedo);
-	}
-}
-
-static void
-DropDatabaseDirectory(Oid db_id, Oid tblspcoid, bool isRedo)
-{
-	char *dbpath = GetDatabasePath(db_id, tblspcoid);
-	/*
-	 * Remove files from the old tablespace
-	 */
-	if (!rmtree(dbpath, true))
-		ereport(WARNING,
-				(errmsg("some useless files may be left behind in old database directory \"%s\"",
-						dbpath)));
-
-	if (isRedo)
-		XLogDropDatabase(db_id);
-}
 /*
  *	PostPrepare_smgr -- Clean up after a successful PREPARE
  *
@@ -583,19 +465,7 @@ PostPrepare_smgr(void)
 		/* must explicitly free the list entry */
 		pfree(pending);
 	}
-
-	PendingDbDelete *pendingDbDelete;
-	PendingDbDelete *nextDbDelete;
-
-	for (pendingDbDelete = pendingDbDeletes; pendingDbDelete != NULL; pendingDbDelete = nextDbDelete)
-	{
-		nextDbDelete = pendingDbDelete->next;
-		pendingDbDeletes = nextDbDelete;
-		/* must explicitly free the list entry */
-		pfree(pendingDbDelete);
-	}
 }
-
 
 /*
  * AtSubCommit_smgr() --- Take care of subtransaction commit.

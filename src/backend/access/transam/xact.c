@@ -31,6 +31,7 @@
 #include "catalog/namespace.h"
 #include "catalog/oid_dispatch.h"
 #include "catalog/storage.h"
+#include "catalog/storage_database.h"
 #include "commands/async.h"
 #include "commands/dbcommands.h"
 #include "commands/resgroupcmds.h"
@@ -1290,7 +1291,7 @@ RecordTransactionCommit(void)
 
 	/* Get data needed for commit record */
 	nrels = smgrGetPendingDeletes(true, &rels);
-	ndeldbs = getPendingDbDeletes(true, &deldbs);
+	ndeldbs = GetPendingDbDeletes(true, &deldbs);
 	nchildren = xactGetCommittedChildren(&children);
 	if (XLogStandbyInfoActive())
 		nmsgs = xactGetCommittedInvalidationMessages(&invalMessages,
@@ -1883,7 +1884,7 @@ RecordTransactionAbort(bool isSubXact)
 
 	/* Fetch the data we need for the abort record */
 	nrels = smgrGetPendingDeletes(false, &rels);
-	ndeldbs = getPendingDbDeletes(false, &deldbs);
+	ndeldbs = GetPendingDbDeletes(false, &deldbs);
 	nchildren = xactGetCommittedChildren(&children);
 
 	/* XXX do we really need a critical section here? */
@@ -2803,7 +2804,7 @@ CommitTransaction(void)
 	 * attempt to access affected files.
 	 */
 	smgrDoPendingDeletes(true);
-	doPendingDbDeletes(true);
+	DoPendingDbDeletes(true);
 
 	AtEOXact_AppendOnly();
 	AtCommit_Notify();
@@ -3100,6 +3101,8 @@ PrepareTransaction(void)
 
 	PostPrepare_smgr();
 
+	PostPrepare_DatabaseStorage();
+
 	PostPrepare_MultiXact(xid);
 
 	PostPrepare_Locks(xid);
@@ -3310,7 +3313,7 @@ AbortTransaction(void)
 							 RESOURCE_RELEASE_AFTER_LOCKS,
 							 false, true);
 		smgrDoPendingDeletes(false);
-		doPendingDbDeletes(false);
+		DoPendingDbDeletes(false);
 
 		AtEOXact_AppendOnly();
 		AtEOXact_GUC(false, 1);

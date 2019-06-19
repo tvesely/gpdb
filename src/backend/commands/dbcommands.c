@@ -44,6 +44,7 @@
 #include "catalog/pg_database.h"
 #include "catalog/pg_db_role_setting.h"
 #include "catalog/pg_tablespace.h"
+#include "catalog/storage_database.h"
 #include "commands/comment.h"
 #include "commands/dbcommands.h"
 #include "commands/seclabel.h"
@@ -1394,7 +1395,7 @@ movedb(const char *dbname, const char *tblspcname)
 	/*
 	 * GPDB: GPDB uses two phase commit and pending deletes, hence cannot locally
 	 * commit here. The rest of the logic related to the non-catalog changes from
-	 * this function is extracted into DropDatabaseDirectory() which is executed at
+	 * this function is extracted into DropDatabaseDirectories() which is executed at
 	 * commit time.
 	 */
 #if 0
