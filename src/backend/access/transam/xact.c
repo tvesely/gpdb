@@ -1894,7 +1894,7 @@ RecordTransactionAbort(bool isSubXact)
 		SetCurrentTransactionStopTimestamp();
 		xlrec.xact_time = xactStopTimestamp;
 	}
-	xlrec.tablespace_oid_to_abort = smgrGetPendingTablespaceForDeletion();
+	xlrec.tablespace_oid_to_abort = GetPendingTablespaceForDeletion();
 	xlrec.nrels = nrels;
 	xlrec.nsubxacts = nchildren;
 	rdata[0].data = (char *) (&xlrec);
@@ -3298,7 +3298,7 @@ AbortTransaction(void)
 							 RESOURCE_RELEASE_AFTER_LOCKS,
 							 false, true);
 		smgrDoPendingDeletes(false);
-		smgrDoPendingTablespaceDeletion();
+		DoPendingTablespaceDeletion();
 
 		AtEOXact_AppendOnly();
 		AtEOXact_GUC(false, 1);
@@ -6356,7 +6356,7 @@ xact_redo_abort(xl_xact_abort *xlrec, TransactionId xid)
 	/* Make sure files supposed to be dropped are dropped */
 	DropRelationFiles(xlrec->xnodes, xlrec->nrels, true);
 
-	smgrDoTablespaceDeletion(xlrec->tablespace_oid_to_abort);
+	DoTablespaceDeletion(xlrec->tablespace_oid_to_abort);
 }
 
 static void
