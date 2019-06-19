@@ -1919,7 +1919,7 @@ RecordTransactionAbort(bool isSubXact)
 		lastrdata = 2;
 	}
 	rdata[lastrdata].next = NULL;
-	
+
 	(void) XLogInsert(RM_XACT_ID, XLOG_XACT_ABORT, rdata);
 
 	/*
