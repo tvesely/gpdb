@@ -1,6 +1,3 @@
--- start_matchignore
--- m/DETAIL: .*/
--- end_matchignore
 -- CREATE TABLESPACE
 create extension if not exists gp_inject_fault;
 create or replace language plpythonu;
@@ -51,15 +48,25 @@ create or replace function cleanup(dbid integer, tablespace_dir text) returns vo
 		perform remove_tablespace_directory(tablespace_dir);
 	end;
 $$ LANGUAGE plpgsql;
-create or replace function list_tablespaces(expected_number_of_tablespaces integer) returns void as $$
-	import subprocess
-	plpy.notice('finding tablespaces:')
-	result = subprocess.check_output("find $MASTER_DATA_DIRECTORY/../../ -name pg_tblspc -exec ls -l {} \;", shell=True);
-	plpy.notice(result);
-	plpy.notice('found N tablespaces:');
-	result = subprocess.check_output("find $MASTER_DATA_DIRECTORY/../../ -name pg_tblspc -exec ls {} \; | wc -l;", shell=True);
-	plpy.notice(result);	
-	plpy.notice('expected {expected_number_of_tablespaces} tablespaces'.format(expected_number_of_tablespaces=expected_number_of_tablespaces)); 
+create or replace function list_tablespace_files(expected_number_of_tablespaces integer, tablespace_dir text) returns void as $$
+	import os
+	result = plpy.execute("select gp_segment_id, pg_tablespace_location(pg_ls_dir('pg_tblspc')::oid) from gp_dist_random('gp_id') union all select gp_execution_segment() as gp_segment_id, pg_tablespace_location(pg_ls_dir('pg_tblspc')::oid) order by gp_segment_id;")
+	rows = []
+	symlink_count = 0
+	for i in range(0, result.nrows()):
+		if result[i]['pg_tablespace_location'] == tablespace_dir:
+			rows.append(result[i])
+			symlink_count+=1
+
+	plpy.notice(rows);
+	plpy.notice('found %d tablespace symlinks' % symlink_count);
+	plpy.notice('expected {expected_number_of_tablespaces} tablespace symlinks'.format(expected_number_of_tablespaces=expected_number_of_tablespaces)); 
+
+	dir_listing = os.listdir(tablespace_dir)
+
+	plpy.notice('found %d tablespace directories' % len(dir_listing));
+	plpy.notice('expected {expected_number_of_tablespaces} tablespace directories'.format(expected_number_of_tablespaces=expected_number_of_tablespaces)); 
+
 	plpy.notice('done finding tablespaces.');
 $$ language plpythonu;
 create or replace function give_mirrors_time_to_catch_up() returns void as $$
@@ -114,21 +121,21 @@ select * from list_tablespace_catalog();
             -1 | pg_global       | 1664
 (8 rows)
 
-select list_tablespaces(:expected_number_of_tablespaces);
-NOTICE:  finding tablespaces:
-CONTEXT:  PL/Python function "list_tablespaces"
-NOTICE:  missing error text
-CONTEXT:  PL/Python function "list_tablespaces"
-NOTICE:  found N tablespaces:
-CONTEXT:  PL/Python function "list_tablespaces"
-NOTICE:         0
-CONTEXT:  PL/Python function "list_tablespaces"
-NOTICE:  expected 0 tablespaces
-CONTEXT:  PL/Python function "list_tablespaces"
+select list_tablespace_files(:expected_number_of_tablespaces, :'tablespace_location');
+NOTICE:  []
+CONTEXT:  PL/Python function "list_tablespace_files"
+NOTICE:  found 0 tablespace symlinks
+CONTEXT:  PL/Python function "list_tablespace_files"
+NOTICE:  expected 0 tablespace symlinks
+CONTEXT:  PL/Python function "list_tablespace_files"
+NOTICE:  found 0 tablespace directories
+CONTEXT:  PL/Python function "list_tablespace_files"
+NOTICE:  expected 0 tablespace directories
+CONTEXT:  PL/Python function "list_tablespace_files"
 NOTICE:  done finding tablespaces.
-CONTEXT:  PL/Python function "list_tablespaces"
- list_tablespaces 
-------------------
+CONTEXT:  PL/Python function "list_tablespace_files"
+ list_tablespace_files 
+-----------------------
  
 (1 row)
 
@@ -182,21 +189,21 @@ select * from list_tablespace_catalog();
             -1 | pg_global       | 1664
 (8 rows)
 
-select list_tablespaces(:expected_number_of_tablespaces);
-NOTICE:  finding tablespaces:
-CONTEXT:  PL/Python function "list_tablespaces"
-NOTICE:  missing error text
-CONTEXT:  PL/Python function "list_tablespaces"
-NOTICE:  found N tablespaces:
-CONTEXT:  PL/Python function "list_tablespaces"
-NOTICE:         0
-CONTEXT:  PL/Python function "list_tablespaces"
-NOTICE:  expected 0 tablespaces
-CONTEXT:  PL/Python function "list_tablespaces"
+select list_tablespace_files(:expected_number_of_tablespaces, :'tablespace_location');
+NOTICE:  []
+CONTEXT:  PL/Python function "list_tablespace_files"
+NOTICE:  found 0 tablespace symlinks
+CONTEXT:  PL/Python function "list_tablespace_files"
+NOTICE:  expected 0 tablespace symlinks
+CONTEXT:  PL/Python function "list_tablespace_files"
+NOTICE:  found 0 tablespace directories
+CONTEXT:  PL/Python function "list_tablespace_files"
+NOTICE:  expected 0 tablespace directories
+CONTEXT:  PL/Python function "list_tablespace_files"
 NOTICE:  done finding tablespaces.
-CONTEXT:  PL/Python function "list_tablespaces"
- list_tablespaces 
-------------------
+CONTEXT:  PL/Python function "list_tablespace_files"
+ list_tablespace_files 
+-----------------------
  
 (1 row)
 
@@ -247,21 +254,21 @@ select * from list_tablespace_catalog();
             -1 | pg_global       | 1664
 (8 rows)
 
-select list_tablespaces(:expected_number_of_tablespaces);
-NOTICE:  finding tablespaces:
-CONTEXT:  PL/Python function "list_tablespaces"
-NOTICE:  missing error text
-CONTEXT:  PL/Python function "list_tablespaces"
-NOTICE:  found N tablespaces:
-CONTEXT:  PL/Python function "list_tablespaces"
-NOTICE:         0
-CONTEXT:  PL/Python function "list_tablespaces"
-NOTICE:  expected 0 tablespaces
-CONTEXT:  PL/Python function "list_tablespaces"
+select list_tablespace_files(:expected_number_of_tablespaces, :'tablespace_location');
+NOTICE:  []
+CONTEXT:  PL/Python function "list_tablespace_files"
+NOTICE:  found 0 tablespace symlinks
+CONTEXT:  PL/Python function "list_tablespace_files"
+NOTICE:  expected 0 tablespace symlinks
+CONTEXT:  PL/Python function "list_tablespace_files"
+NOTICE:  found 0 tablespace directories
+CONTEXT:  PL/Python function "list_tablespace_files"
+NOTICE:  expected 0 tablespace directories
+CONTEXT:  PL/Python function "list_tablespace_files"
 NOTICE:  done finding tablespaces.
-CONTEXT:  PL/Python function "list_tablespaces"
- list_tablespaces 
-------------------
+CONTEXT:  PL/Python function "list_tablespace_files"
+ list_tablespace_files 
+-----------------------
  
 (1 row)
 
@@ -310,21 +317,21 @@ select * from list_tablespace_catalog();
             -1 | pg_global       | 1664
 (8 rows)
 
-select list_tablespaces(:expected_number_of_tablespaces);
-NOTICE:  finding tablespaces:
-CONTEXT:  PL/Python function "list_tablespaces"
-NOTICE:  missing error text
-CONTEXT:  PL/Python function "list_tablespaces"
-NOTICE:  found N tablespaces:
-CONTEXT:  PL/Python function "list_tablespaces"
-NOTICE:         0
-CONTEXT:  PL/Python function "list_tablespaces"
-NOTICE:  expected 0 tablespaces
-CONTEXT:  PL/Python function "list_tablespaces"
+select list_tablespace_files(:expected_number_of_tablespaces, :'tablespace_location');
+NOTICE:  []
+CONTEXT:  PL/Python function "list_tablespace_files"
+NOTICE:  found 0 tablespace symlinks
+CONTEXT:  PL/Python function "list_tablespace_files"
+NOTICE:  expected 0 tablespace symlinks
+CONTEXT:  PL/Python function "list_tablespace_files"
+NOTICE:  found 0 tablespace directories
+CONTEXT:  PL/Python function "list_tablespace_files"
+NOTICE:  expected 0 tablespace directories
+CONTEXT:  PL/Python function "list_tablespace_files"
 NOTICE:  done finding tablespaces.
-CONTEXT:  PL/Python function "list_tablespaces"
- list_tablespaces 
-------------------
+CONTEXT:  PL/Python function "list_tablespace_files"
+ list_tablespace_files 
+-----------------------
  
 (1 row)
 
@@ -387,22 +394,21 @@ select * from list_tablespace_catalog();
             -1 | pg_global       | 1664
 (8 rows)
 
-select list_tablespaces(:expected_number_of_tablespaces);
-NOTICE:  finding tablespaces:
-CONTEXT:  PL/Python function "list_tablespaces"
-NOTICE:  total 0
-DETAIL:  lrwx------  1 adamberlin  staff  32 Jun 19 12:31 16614 -> /tmp/my_tablespace_for_testing/2
-CONTEXT:  PL/Python function "list_tablespaces"
-NOTICE:  found N tablespaces:
-CONTEXT:  PL/Python function "list_tablespaces"
-NOTICE:         1
-CONTEXT:  PL/Python function "list_tablespaces"
-NOTICE:  expected 1 tablespaces
-CONTEXT:  PL/Python function "list_tablespaces"
+select list_tablespace_files(:expected_number_of_tablespaces, :'tablespace_location');
+NOTICE:  [{'gp_segment_id': 0, 'pg_tablespace_location': '/tmp/my_tablespace_for_testing'}]
+CONTEXT:  PL/Python function "list_tablespace_files"
+NOTICE:  found 1 tablespace symlinks
+CONTEXT:  PL/Python function "list_tablespace_files"
+NOTICE:  expected 1 tablespace symlinks
+CONTEXT:  PL/Python function "list_tablespace_files"
+NOTICE:  found 1 tablespace directories
+CONTEXT:  PL/Python function "list_tablespace_files"
+NOTICE:  expected 1 tablespace directories
+CONTEXT:  PL/Python function "list_tablespace_files"
 NOTICE:  done finding tablespaces.
-CONTEXT:  PL/Python function "list_tablespaces"
- list_tablespaces 
-------------------
+CONTEXT:  PL/Python function "list_tablespace_files"
+ list_tablespace_files 
+-----------------------
  
 (1 row)
 
