@@ -119,7 +119,6 @@ SELECT * FROM list_tablespace_contents_all_dbids(get_tablespace_version_director
  5    | {}
 (8 rows)
 
-
 -- Cleanup
 SELECT gp_inject_fault('inside_move_db_transaction', 'reset', dbid) FROM gp_segment_configuration WHERE role = 'p' AND content = 0;
 NOTICE:  Success:  (seg0 10.64.5.114:25432 pid=88322)

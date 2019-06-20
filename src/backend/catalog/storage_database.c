@@ -1,6 +1,10 @@
+#include "postgres.h"
+
+#include "access/xlogutils.h"
+#include "catalog/pg_database.h"
 #include "catalog/storage_database.h"
 #include "common/relpath.h"
-#include "access/xlogutils.h"
+#include "storage/lmgr.h"
 
 typedef struct PendingDbDelete
 {
@@ -12,6 +16,7 @@ typedef struct PendingDbDelete
 static void dropDatabaseDirectory(DbDirNode *deldb, bool isRedo);
 
 static PendingDbDelete *pendingDbDeletes = NULL; /* head of linked list */
+static Oid sessionLockMoveDbOid = InvalidOid;
 
 /*
  * ScheduleDbDirDelete
@@ -55,6 +60,29 @@ DoPendingDbDeletes(bool isCommit)
 		/* must explicitly free the list entry */
 		pfree(pending);
 	}
+}
+
+void
+MoveDbSessionLockAcquire(Oid db_id)
+{
+	Assert(sessionLockMoveDbOid == InvalidOid);
+	LockSharedObjectForSession(DatabaseRelationId, db_id, 0,
+							   AccessExclusiveLock);
+	sessionLockMoveDbOid = db_id;
+}
+
+void
+MoveDbSessionLockRelease()
+{
+	if (sessionLockMoveDbOid != InvalidOid)
+		UnlockSharedObjectForSession(DatabaseRelationId, sessionLockMoveDbOid, 0,
+								 AccessExclusiveLock);
+}
+
+void
+AtEOXact_DatabaseStorage()
+{
+	sessionLockMoveDbOid = InvalidOid;
 }
 
 int
@@ -123,6 +151,8 @@ PostPrepare_DatabaseStorage()
 		/* must explicitly free the list entry */
 		pfree(pendingDbDelete);
 	}
+
+	AtEOXact_DatabaseStorage();
 }
 
 static void

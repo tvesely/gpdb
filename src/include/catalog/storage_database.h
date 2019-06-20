@@ -19,5 +19,7 @@ extern void DoPendingDbDeletes(bool isCommit);
 extern int	GetPendingDbDeletes(bool forCommit, DbDirNode **ptr);
 extern void DropDatabaseDirectories(DbDirNode *deldbs, int ndeldbs, bool isRedo);
 extern void PostPrepare_DatabaseStorage(void);
-
+extern void MoveDbSessionLockAcquire(Oid db_id);
+extern void MoveDbSessionLockRelease(void);
+extern void AtEOXact_DatabaseStorage(void);
 #endif   /* STORAGE_DATABASE_H */

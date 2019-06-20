@@ -1160,8 +1160,7 @@ movedb(const char *dbname, const char *tblspcname)
 	 * lock be released at commit, except that someone could try to move
 	 * relations of the DB back into the old directory while we rmtree() it.)
 	 */
-	LockSharedObjectForSession(DatabaseRelationId, db_id, 0,
-							   AccessExclusiveLock);
+	MoveDbSessionLockAcquire(db_id);
 
 	/*
 	 * Permission checks
@@ -1423,8 +1422,7 @@ movedb(const char *dbname, const char *tblspcname)
 		 * QE needs to release session level locks as can't Prepare Transaction
 		 * with session locks.
 		 */
-		UnlockSharedObjectForSession(DatabaseRelationId, db_id, 0,
-									 AccessExclusiveLock);
+		MoveDbSessionLockRelease();
 	}
 
 	/*
