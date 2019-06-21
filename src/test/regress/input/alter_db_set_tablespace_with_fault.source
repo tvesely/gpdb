@@ -1,85 +1,54 @@
--- Scenario 2: Where alter database set tablespace fails on segment. In this
--- case we expect that the tablespace for database remains unchanged across all
--- the segments.
+CREATE SCHEMA adst_w_fault;
 
--- Given we create a database
-CREATE DATABASE alter_db_2;
-\c alter_db_2
+SET search_path TO adst_w_fault,public;
 
--- functions to help validation later
-CREATE FUNCTION rel_filepath_on_master(regclass) RETURNS TABLE(gp_segment_id int, filepath text)
-  STRICT STABLE LANGUAGE SQL AS
-$fn$
-SELECT gp_execution_segment(), pg_relation_filepath($1) AS filepath
-$fn$
-EXECUTE ON MASTER;
-
-CREATE FUNCTION rel_filepaths_on_segments(regclass) RETURNS TABLE(gp_segment_id int, filepath text)
-  STRICT STABLE LANGUAGE SQL AS
-$fn$
-SELECT gp_execution_segment(), pg_relation_filepath($1) AS filepath
-$fn$
-EXECUTE ON ALL SEGMENTS;
-
-CREATE FUNCTION rel_filepaths(regclass) RETURNS TABLE(gp_segment_id int, filepath text)
-  STRICT STABLE LANGUAGE SQL AS
-$fn$
-SELECT * FROM rel_filepath_on_master($1)
-UNION ALL
-SELECT * FROM rel_filepaths_on_segments($1);
-$fn$;
-
--- And create a table in that database with data
-CREATE TABLE tbl_2(id int, name text);
-INSERT INTO tbl_2 VALUES (1, 'a'), (2, 'b'), (5, 'c');
-
--- When we create a tablespace
-\! mkdir -p '@testtablespace@/alter_tblspc_2';
-CREATE TABLESPACE alter_tblspc_2 LOCATION '@testtablespace@/alter_tblspc_2';
-
-\c regression
--- And error on a segment while altering the database to use the new tablespace
-SELECT gp_inject_fault_infinite('inside_move_db_transaction', 'error', dbid) FROM gp_segment_configuration WHERE role = 'p' AND content = 0;
-ALTER DATABASE alter_db_2 SET TABLESPACE alter_tblspc_2;
-
--- Then all the database files from QD and all QEs should continue to use the
--- old tablespace and there should be no files in the new tablespace.
-\c alter_db_2
-SELECT count(*) from tbl_2;
-SELECT gp_segment_id, datname from pg_database
-  where datname = 'alter_db_2' and dattablespace in (select oid from pg_tablespace where spcname = 'pg_default');
-SELECT gp_segment_id, datname from gp_dist_random('pg_database')
-  where datname = 'alter_db_2' and dattablespace in (select oid from pg_tablespace where spcname = 'pg_default');
-
-SELECT gp_segment_id, substring(filepath FOR 5) AS filepath FROM rel_filepaths('tbl_2') WHERE filepath LIKE 'pg_tblspc%';
-SELECT gp_segment_id, substring(filepath FOR 5) AS filepath FROM rel_filepaths('tbl_2') WHERE filepath LIKE 'base%';
-
-\c regression
 CREATE OR REPLACE FUNCTION get_tablespace_version_directory_name()
   RETURNS TEXT
 AS '@abs_builddir@/regress.so', 'get_tablespace_version_directory_name'
   LANGUAGE C;
 
-CREATE OR REPLACE LANGUAGE plpythonu;
-CREATE FUNCTION list_tablespace_contents_all_dbids(version_dir_name text) RETURNS TABLE (dbid text, dboid_dirs text[])
-VOLATILE LANGUAGE plpythonu
-AS
-$fn$
-import os
+-- Scenario 2: Where alter database set tablespace fails on segment. In this
+-- case we expect that the tablespace for database remains unchanged across all
+-- the segments and all of the database files remain where they were before the alter.
 
-dboid_dirs = []
-for dbid_dir in os.listdir("@testtablespace@/alter_tblspc_2"):
-  dboid_dirs.append((dbid_dir, os.listdir("@testtablespace@/alter_tblspc_2/" + dbid_dir + '/' + version_dir_name)))
+-- Set tablespace location variables
+\set adst_source_tablespace_location '@testtablespace@/adst_w_fault_source'
+\set adst_destination_tablespace_location '@testtablespace@/adst_w_fault_dest'
 
-return dboid_dirs$fn$;
+-- Given we create the source and destination tablespaces
+
+\! mkdir @testtablespace@/adst_w_fault_source
+CREATE TABLESPACE adst_source_tablespace LOCATION :'adst_source_tablespace_location';
+\! mkdir @testtablespace@/adst_w_fault_dest
+CREATE TABLESPACE adst_destination_tablespace LOCATION :'adst_destination_tablespace_location';
+
+-- And we create a database in the source tablespace
+CREATE DATABASE alter_db TABLESPACE adst_source_tablespace;
+
+-- And we record the filesystem state for the database in the source tablespace
+CREATE TEMPORARY TABLE before_alter AS SELECT * FROM stat_db_objects('alter_db', 'adst_source_tablespace');
+
+-- And error on a segment while altering the database to use the new tablespace
+SELECT gp_inject_fault('inside_move_db_transaction', 'error', dbid) FROM gp_segment_configuration WHERE role = 'p' AND content = 0;
+ALTER DATABASE alter_db SET TABLESPACE adst_destination_tablespace;
 
 -- Increase the likelihood that mirrors have applied the filesystem changes
-SELECT pg_sleep(5);
+SELECT give_mirrors_time_to_catch_up();
 
-SELECT * FROM list_tablespace_contents_all_dbids(get_tablespace_version_directory_name());
+-- Then all the files of the database should remain in the dboid directory in the source tablespace directory for all database instances.
+CREATE TEMPORARY TABLE after_alter AS SELECT * FROM stat_db_objects('alter_db', 'adst_source_tablespace');
+(SELECT * FROM before_alter) EXCEPT (SELECT * FROM after_alter);
+
+-- And the dboid directory under the target tablespace directory should remain empty for all database instances.
+SELECT * FROM stat_db_objects('alter_db', 'adst_destination_tablespace');
 
 -- Cleanup
 SELECT gp_inject_fault('inside_move_db_transaction', 'reset', dbid) FROM gp_segment_configuration WHERE role = 'p' AND content = 0;
 
-DROP DATABASE alter_db_2;
-DROP TABLESPACE alter_tblspc_2;
+DROP DATABASE alter_db;
+DROP TABLESPACE adst_source_tablespace;
+DROP TABLESPACE adst_destination_tablespace;
+
+DROP FUNCTION get_tablespace_version_directory_name();
+
+DROP SCHEMA adst_w_fault;

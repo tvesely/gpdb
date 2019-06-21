@@ -1,131 +1,90 @@
--- Scenario 2: Where alter database set tablespace fails on segment. In this
--- case we expect that the tablespace for database remains unchanged across all
--- the segments.
--- Given we create a database
-CREATE DATABASE alter_db_2;
-\c alter_db_2
--- functions to help validation later
-CREATE FUNCTION rel_filepath_on_master(regclass) RETURNS TABLE(gp_segment_id int, filepath text)
-  STRICT STABLE LANGUAGE SQL AS
-$fn$
-SELECT gp_execution_segment(), pg_relation_filepath($1) AS filepath
-$fn$
-EXECUTE ON MASTER;
-CREATE FUNCTION rel_filepaths_on_segments(regclass) RETURNS TABLE(gp_segment_id int, filepath text)
-  STRICT STABLE LANGUAGE SQL AS
-$fn$
-SELECT gp_execution_segment(), pg_relation_filepath($1) AS filepath
-$fn$
-EXECUTE ON ALL SEGMENTS;
-CREATE FUNCTION rel_filepaths(regclass) RETURNS TABLE(gp_segment_id int, filepath text)
-  STRICT STABLE LANGUAGE SQL AS
-$fn$
-SELECT * FROM rel_filepath_on_master($1)
-UNION ALL
-SELECT * FROM rel_filepaths_on_segments($1);
-$fn$;
--- And create a table in that database with data
-CREATE TABLE tbl_2(id int, name text);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'id' as the Greenplum Database data distribution key for this table.
-HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
-INSERT INTO tbl_2 VALUES (1, 'a'), (2, 'b'), (5, 'c');
--- When we create a tablespace
-\! mkdir -p '@testtablespace@/alter_tblspc_2';
-CREATE TABLESPACE alter_tblspc_2 LOCATION '@testtablespace@/alter_tblspc_2';
-\c regression
--- And error on a segment while altering the database to use the new tablespace
-SELECT gp_inject_fault_infinite('inside_move_db_transaction', 'error', dbid) FROM gp_segment_configuration WHERE role = 'p' AND content = 0;
-NOTICE:  Success:  (seg0 10.64.5.114:25432 pid=88313)
- gp_inject_fault_infinite 
---------------------------
- t
-(1 row)
-
-ALTER DATABASE alter_db_2 SET TABLESPACE alter_tblspc_2;
-ERROR:  fault triggered, fault name:'inside_move_db_transaction' fault type:'error'  (seg0 10.64.5.114:25432 pid=88313)
--- Then all the database files from QD and all QEs should continue to use the
--- old tablespace and there should be no files in the new tablespace.
-\c alter_db_2
-SELECT count(*) from tbl_2;
- count 
--------
-     3
-(1 row)
-
-SELECT gp_segment_id, datname from pg_database
-  where datname = 'alter_db_2' and dattablespace in (select oid from pg_tablespace where spcname = 'pg_default');
- gp_segment_id |  datname   
----------------+------------
-            -1 | alter_db_2
-(1 row)
-
-SELECT gp_segment_id, datname from gp_dist_random('pg_database')
-  where datname = 'alter_db_2' and dattablespace in (select oid from pg_tablespace where spcname = 'pg_default');
- gp_segment_id |  datname   
----------------+------------
-             1 | alter_db_2
-             2 | alter_db_2
-             0 | alter_db_2
-(3 rows)
-
-SELECT gp_segment_id, substring(filepath FOR 5) AS filepath FROM rel_filepaths('tbl_2') WHERE filepath LIKE 'pg_tblspc%';
- gp_segment_id | filepath 
----------------+----------
-(0 rows)
-
-SELECT gp_segment_id, substring(filepath FOR 5) AS filepath FROM rel_filepaths('tbl_2') WHERE filepath LIKE 'base%';
- gp_segment_id | filepath 
----------------+----------
-            -1 | base/
-             0 | base/
-             1 | base/
-             2 | base/
-(4 rows)
-
-\c regression
+CREATE SCHEMA adst_w_fault;
+SET search_path TO adst_w_fault,public;
 CREATE OR REPLACE FUNCTION get_tablespace_version_directory_name()
   RETURNS TEXT
 AS '@abs_builddir@/regress.so', 'get_tablespace_version_directory_name'
   LANGUAGE C;
-CREATE OR REPLACE LANGUAGE plpythonu;
-CREATE FUNCTION list_tablespace_contents_all_dbids(version_dir_name text) RETURNS TABLE (dbid text, dboid_dirs text[])
-VOLATILE LANGUAGE plpythonu
-AS
-$fn$
-import os
-
-dboid_dirs = []
-for dbid_dir in os.listdir("@abs_builddir@/testtablespace/alter_tblspc_2"):
-  dboid_dirs.append((dbid_dir, os.listdir("@abs_builddir@/testtablespace/alter_tblspc_2/" + dbid_dir + '/' + version_dir_name)))
-
-return dboid_dirs$fn$;
--- Increase the likelihood that mirrors have applied the filesystem changes
-SELECT pg_sleep(5);
- pg_sleep 
-----------
- 
-(1 row)
-
-SELECT * FROM list_tablespace_contents_all_dbids(get_tablespace_version_directory_name());
- dbid | dboid_dirs 
-------+------------
- 7    | {}
- 6    | {}
- 1    | {}
- 8    | {}
- 4    | {}
- 3    | {}
- 2    | {}
- 5    | {}
-(8 rows)
-
--- Cleanup
-SELECT gp_inject_fault('inside_move_db_transaction', 'reset', dbid) FROM gp_segment_configuration WHERE role = 'p' AND content = 0;
-NOTICE:  Success:  (seg0 10.64.5.114:25432 pid=88322)
+-- Scenario 2: Where alter database set tablespace fails on segment. In this
+-- case we expect that the tablespace for database remains unchanged across all
+-- the segments and all of the database files remain where they were before the alter.
+-- Set tablespace location variables
+\set adst_source_tablespace_location '@testtablespace@/adst_w_fault_source'
+\set adst_destination_tablespace_location '@testtablespace@/adst_w_fault_dest'
+-- Given we create the source and destination tablespaces
+\! mkdir @testtablespace@/adst_w_fault_source
+CREATE TABLESPACE adst_source_tablespace LOCATION :'adst_source_tablespace_location';
+\! mkdir @testtablespace@/adst_w_fault_dest
+CREATE TABLESPACE adst_destination_tablespace LOCATION :'adst_destination_tablespace_location';
+-- And we create a database in the source tablespace
+CREATE DATABASE alter_db TABLESPACE adst_source_tablespace;
+-- And we record the filesystem state for the database in the source tablespace
+CREATE TEMPORARY TABLE before_alter AS SELECT * FROM stat_db_objects('alter_db', 'adst_source_tablespace');
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause. Creating a NULL policy entry.
+-- And error on a segment while altering the database to use the new tablespace
+SELECT gp_inject_fault('inside_move_db_transaction', 'error', dbid) FROM gp_segment_configuration WHERE role = 'p' AND content = 0;
+NOTICE:  Success:  (seg0 127.0.0.1:25432 pid=30242)
  gp_inject_fault 
 -----------------
  t
 (1 row)
 
-DROP DATABASE alter_db_2;
-DROP TABLESPACE alter_tblspc_2;
+ALTER DATABASE alter_db SET TABLESPACE adst_destination_tablespace;
+ERROR:  fault triggered, fault name:'inside_move_db_transaction' fault type:'error'  (seg0 127.0.0.1:25432 pid=30242)
+-- Increase the likelihood that mirrors have applied the filesystem changes
+SELECT give_mirrors_time_to_catch_up();
+ give_mirrors_time_to_catch_up 
+-------------------------------
+ 
+(1 row)
+
+-- Then all the files of the database should remain in the dboid directory in the source tablespace directory for all database instances.
+CREATE TEMPORARY TABLE after_alter AS SELECT * FROM stat_db_objects('alter_db', 'adst_source_tablespace');
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause. Creating a NULL policy entry.
+(SELECT * FROM before_alter) EXCEPT (SELECT * FROM after_alter);
+ dbid | relfilenode_dboid_relative_path | size 
+------+---------------------------------+------
+(0 rows)
+
+-- And the dboid directory under the target tablespace directory should remain empty for all database instances.
+SELECT * FROM stat_db_objects('alter_db', 'adst_destination_tablespace');
+NOTICE:  dboid dir for database alter_db does not exist on dbid = 1
+CONTEXT:  PL/Python function "stat_db_objects"
+NOTICE:  dboid dir for database alter_db does not exist on dbid = 2
+CONTEXT:  PL/Python function "stat_db_objects"
+NOTICE:  dboid dir for database alter_db does not exist on dbid = 3
+CONTEXT:  PL/Python function "stat_db_objects"
+NOTICE:  dboid dir for database alter_db does not exist on dbid = 4
+CONTEXT:  PL/Python function "stat_db_objects"
+NOTICE:  dboid dir for database alter_db does not exist on dbid = 5
+CONTEXT:  PL/Python function "stat_db_objects"
+NOTICE:  dboid dir for database alter_db does not exist on dbid = 6
+CONTEXT:  PL/Python function "stat_db_objects"
+NOTICE:  dboid dir for database alter_db does not exist on dbid = 7
+CONTEXT:  PL/Python function "stat_db_objects"
+NOTICE:  dboid dir for database alter_db does not exist on dbid = 8
+CONTEXT:  PL/Python function "stat_db_objects"
+ dbid | relfilenode_dboid_relative_path | size 
+------+---------------------------------+------
+    1 |                                 |     
+    2 |                                 |     
+    3 |                                 |     
+    4 |                                 |     
+    5 |                                 |     
+    6 |                                 |     
+    7 |                                 |     
+    8 |                                 |     
+(8 rows)
+
+-- Cleanup
+SELECT gp_inject_fault('inside_move_db_transaction', 'reset', dbid) FROM gp_segment_configuration WHERE role = 'p' AND content = 0;
+NOTICE:  Success:  (seg0 127.0.0.1:25432 pid=11730)
+ gp_inject_fault 
+-----------------
+ t
+(1 row)
+
+DROP DATABASE alter_db;
+DROP TABLESPACE adst_source_tablespace;
+DROP TABLESPACE adst_destination_tablespace;
+DROP FUNCTION get_tablespace_version_directory_name();
+DROP SCHEMA adst_w_fault;

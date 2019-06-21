@@ -1,65 +1,76 @@
+CREATE SCHEMA adst;
+SET search_path TO adst,public;
+CREATE OR REPLACE FUNCTION get_tablespace_version_directory_name()
+  RETURNS TEXT
+AS '@abs_builddir@/regress.so', 'get_tablespace_version_directory_name'
+  LANGUAGE C;
 -- Scenario 1: Where alter database set tablespace successfully changes the
--- underlying tablespace directory.
--- Given we create a database
-CREATE DATABASE alter_db_1;
-\c alter_db_1
--- functions to help validation later
-CREATE FUNCTION rel_filepath_on_master(regclass) RETURNS TABLE(gp_segment_id int, filepath text)
-STRICT STABLE LANGUAGE SQL AS
-  $fn$
-  SELECT gp_execution_segment(), pg_relation_filepath($1) AS filepath
-  $fn$
-EXECUTE ON MASTER;
-CREATE FUNCTION rel_filepaths_on_segments(regclass) RETURNS TABLE(gp_segment_id int, filepath text)
-STRICT STABLE LANGUAGE SQL AS
-  $fn$
-  SELECT gp_execution_segment(), pg_relation_filepath($1) AS filepath
-  $fn$
-EXECUTE ON ALL SEGMENTS;
-CREATE FUNCTION rel_filepaths(regclass) RETURNS TABLE(gp_segment_id int, filepath text)
-  STRICT STABLE LANGUAGE SQL AS
-$fn$
-SELECT * FROM rel_filepath_on_master($1)
-UNION ALL
-SELECT * FROM rel_filepaths_on_segments($1);
-$fn$;
--- And create a table in that database with data
-CREATE TABLE tbl_1(id int, name text);
-NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause -- Using column named 'id' as the Greenplum Database data distribution key for this table.
-HINT:  The 'DISTRIBUTED BY' clause determines the distribution of data. Make sure column(s) chosen are the optimal data distribution key to minimize skew.
-INSERT INTO tbl_1 VALUES (1, 'a'), (2, 'b'), (5, 'c');
--- When we create a tablespace
-\! mkdir -p '@testtablespace@/alter_tblspc_1';
-CREATE TABLESPACE alter_tblspc_1 LOCATION '@testtablespace@/alter_tblspc_1';
--- And alter the database to use the new tablespace
-\c regression
-ALTER DATABASE alter_db_1 SET TABLESPACE alter_tblspc_1;
--- Then all the database files from QD and all QEs should be moved into the new
--- tablespace. We use the fact that default tablespace names begin with 'base'
--- where as user created tablespaces begin with 'pg_tblspc'
-\c alter_db_1
-SELECT gp_segment_id, substring(filepath FOR 5) AS filepath_prefix FROM rel_filepaths('tbl_1') WHERE filepath LIKE 'pg_tblspc%';
- gp_segment_id | filepath_prefix 
----------------+-----------------
-            -1 | pg_tb
-             0 | pg_tb
-             1 | pg_tb
-             2 | pg_tb
-(4 rows)
+-- underlying tablespace directory. In this case, we we expect that
+-- the tablespace for database has changed across all the segments and all of
+-- the database files have been successfully moved to the new tablespace location.
+-- Set tablespace location variables
+\set adst_source_tablespace_location '@testtablespace@/adst_source'
+\set adst_destination_tablespace_location '@testtablespace@/adst_dest'
+-- Given we create the source and destination tablespaces
+\! mkdir @testtablespace@/adst_source
+CREATE TABLESPACE adst_source_tablespace LOCATION :'adst_source_tablespace_location';
+\! mkdir @testtablespace@/adst_dest
+CREATE TABLESPACE adst_destination_tablespace LOCATION :'adst_destination_tablespace_location';
+-- And we create a database in the source tablespace
+CREATE DATABASE alter_db TABLESPACE adst_source_tablespace;
+-- And we record the filesystem state for the database in the source tablespace
+CREATE TEMPORARY TABLE before_alter AS SELECT * FROM stat_db_objects('alter_db', 'adst_source_tablespace');
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause. Creating a NULL policy entry.
+-- And we move the database between tablespaces
+ALTER DATABASE alter_db SET TABLESPACE adst_destination_tablespace;
+-- Increase the likelihood that mirrors have applied the filesystem changes
+SELECT give_mirrors_time_to_catch_up();
+ give_mirrors_time_to_catch_up 
+-------------------------------
+ 
+(1 row)
 
-SELECT gp_segment_id, substring(filepath FOR 5) AS filepath_prefix FROM rel_filepaths('tbl_1') WHERE filepath LIKE 'base%';
- gp_segment_id | filepath_prefix 
----------------+-----------------
+-- Then all the files of the database should now be in the dboid directory in the target tablespace directory for all database instances.
+CREATE TEMPORARY TABLE after_alter AS SELECT * FROM stat_db_objects('alter_db', 'adst_destination_tablespace');
+NOTICE:  Table doesn't have 'DISTRIBUTED BY' clause. Creating a NULL policy entry.
+(SELECT * FROM before_alter) EXCEPT (SELECT * FROM after_alter);
+ dbid | relfilenode_dboid_relative_path | size 
+------+---------------------------------+------
 (0 rows)
 
-SELECT * FROM tbl_1;
- id | name 
-----+------
-  2 | b
-  1 | a
-  5 | c
-(3 rows)
+-- And the dboid directory under the source tablespace directory should remain empty for all database instances.
+SELECT * FROM stat_db_objects('alter_db', 'adst_source_tablespace');
+NOTICE:  dboid dir for database alter_db does not exist on dbid = 1
+CONTEXT:  PL/Python function "stat_db_objects"
+NOTICE:  dboid dir for database alter_db does not exist on dbid = 2
+CONTEXT:  PL/Python function "stat_db_objects"
+NOTICE:  dboid dir for database alter_db does not exist on dbid = 3
+CONTEXT:  PL/Python function "stat_db_objects"
+NOTICE:  dboid dir for database alter_db does not exist on dbid = 4
+CONTEXT:  PL/Python function "stat_db_objects"
+NOTICE:  dboid dir for database alter_db does not exist on dbid = 5
+CONTEXT:  PL/Python function "stat_db_objects"
+NOTICE:  dboid dir for database alter_db does not exist on dbid = 6
+CONTEXT:  PL/Python function "stat_db_objects"
+NOTICE:  dboid dir for database alter_db does not exist on dbid = 7
+CONTEXT:  PL/Python function "stat_db_objects"
+NOTICE:  dboid dir for database alter_db does not exist on dbid = 8
+CONTEXT:  PL/Python function "stat_db_objects"
+ dbid | relfilenode_dboid_relative_path | size 
+------+---------------------------------+------
+    1 |                                 |     
+    2 |                                 |     
+    3 |                                 |     
+    4 |                                 |     
+    5 |                                 |     
+    6 |                                 |     
+    7 |                                 |     
+    8 |                                 |     
+(8 rows)
 
-\c regression
-DROP DATABASE alter_db_1;
-DROP TABLESPACE alter_tblspc_1;
+-- Cleanup
+DROP DATABASE alter_db;
+DROP TABLESPACE adst_source_tablespace;
+DROP TABLESPACE adst_destination_tablespace;
+DROP FUNCTION get_tablespace_version_directory_name();
+DROP SCHEMA adst;
