@@ -51,13 +51,9 @@ DoPendingDbDeletes(bool isCommit)
 		pendingDbDeletes = next;
 		/* do deletion if called for */
 		if (pending->atCommit == isCommit)
-		{
 			dropDatabaseDirectory(&pending->dbDirNode,
 								  false);
-			pfree(pending);
-			return;
-		}
-		/* must explicitly free the list entry */
+
 		pfree(pending);
 	}
 }
