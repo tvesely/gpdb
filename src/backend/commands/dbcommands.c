@@ -1205,8 +1205,7 @@ movedb(const char *dbname, const char *tblspcname)
 	if (src_tblspcoid == dst_tblspcoid)
 	{
 		heap_close(pgdbrel, NoLock);
-		UnlockSharedObjectForSession(DatabaseRelationId, db_id, 0,
-									 AccessExclusiveLock);
+		MoveDbSessionLockRelease();
 		return;
 	}
 

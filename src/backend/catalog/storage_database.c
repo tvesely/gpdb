@@ -70,13 +70,16 @@ MoveDbSessionLockAcquire(Oid db_id)
 void
 MoveDbSessionLockRelease()
 {
-	if (sessionLockMoveDbOid != InvalidOid)
-		UnlockSharedObjectForSession(DatabaseRelationId, sessionLockMoveDbOid, 0,
-								 AccessExclusiveLock);
+	if (sessionLockMoveDbOid == InvalidOid)
+		return;
+	
+	UnlockSharedObjectForSession(DatabaseRelationId, sessionLockMoveDbOid, 0,
+							 AccessExclusiveLock);
+	DatabaseStorageResetSessionLock();
 }
 
 void
-AtEOXact_DatabaseStorage()
+DatabaseStorageResetSessionLock()
 {
 	sessionLockMoveDbOid = InvalidOid;
 }
@@ -148,7 +151,7 @@ PostPrepare_DatabaseStorage()
 		pfree(pendingDbDelete);
 	}
 
-	AtEOXact_DatabaseStorage();
+	DatabaseStorageResetSessionLock();
 }
 
 static void

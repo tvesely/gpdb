@@ -2815,7 +2815,6 @@ CommitTransaction(void)
 	if(Gp_role == GP_ROLE_DISPATCH)
 		MoveDbSessionLockRelease();
 
-	AtEOXact_DatabaseStorage();
 	AtEOXact_AppendOnly();
 	AtCommit_Notify();
 	AtEOXact_GUC(true, 1);
@@ -3325,7 +3324,7 @@ AbortTransaction(void)
 		smgrDoPendingDeletes(false);
 		DoPendingDbDeletes(false);
 
-		AtEOXact_DatabaseStorage();
+		DatabaseStorageResetSessionLock();
 		AtEOXact_AppendOnly();
 		AtEOXact_GUC(false, 1);
 		AtEOXact_SPI(false);
