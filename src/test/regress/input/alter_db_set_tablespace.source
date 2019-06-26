@@ -2,11 +2,6 @@ CREATE SCHEMA adst;
 
 SET search_path TO adst,public;
 
-CREATE OR REPLACE FUNCTION get_tablespace_version_directory_name()
-  RETURNS TEXT
-AS '@abs_builddir@/regress.so', 'get_tablespace_version_directory_name'
-  LANGUAGE C;
-
 -- Scenario 1: Where alter database set tablespace successfully changes the
 -- underlying tablespace directory. In this case, we we expect that
 -- the tablespace for database has changed across all the segments and all of
@@ -46,7 +41,5 @@ SELECT * FROM stat_db_objects('alter_db', 'adst_source_tablespace');
 DROP DATABASE alter_db;
 DROP TABLESPACE adst_source_tablespace;
 DROP TABLESPACE adst_destination_tablespace;
-
-DROP FUNCTION get_tablespace_version_directory_name();
 
 DROP SCHEMA adst;

@@ -28,7 +28,7 @@ db_instances = {}
 PG_DEFAULT_TSOID = 1663
 PG_GLOBAL_TSOID = 1664
 
-result = plpy.execute("select get_tablespace_version_directory_name() as tablespace_version_dir_name;")
+result = plpy.execute("select gp_tablespace_version_directory_name() as tablespace_version_dir_name;")
 tablespace_version_dir_name = result[0]['tablespace_version_dir_name']
 
 result = plpy.execute("SELECT oid AS dboid FROM pg_database WHERE datname='%s'" % datname)

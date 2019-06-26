@@ -1,9 +1,5 @@
 CREATE SCHEMA adst_w_fault;
 SET search_path TO adst_w_fault,public;
-CREATE OR REPLACE FUNCTION get_tablespace_version_directory_name()
-  RETURNS TEXT
-AS '@abs_builddir@/regress.so', 'get_tablespace_version_directory_name'
-  LANGUAGE C;
 -- Scenario 2: Where alter database set tablespace fails on segment. In this
 -- case we expect that the tablespace for database remains unchanged across all
 -- the segments and all of the database files remain where they were before the alter.
@@ -86,5 +82,4 @@ NOTICE:  Success:  (seg0 127.0.0.1:25432 pid=11730)
 DROP DATABASE alter_db;
 DROP TABLESPACE adst_source_tablespace;
 DROP TABLESPACE adst_destination_tablespace;
-DROP FUNCTION get_tablespace_version_directory_name();
 DROP SCHEMA adst_w_fault;
