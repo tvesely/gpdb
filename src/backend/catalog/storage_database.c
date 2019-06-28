@@ -4,6 +4,7 @@
 #include "catalog/pg_database.h"
 #include "catalog/storage_database.h"
 #include "common/relpath.h"
+#include "utils/faultinjector.h"
 #include "storage/lmgr.h"
 
 typedef struct PendingDbDelete
@@ -128,6 +129,11 @@ DropDatabaseDirectories(DbDirNode *deldbs, int ndeldbs, bool isRedo)
 	{
 		dropDatabaseDirectory(&deldbs[i], isRedo);
 	}
+
+#ifdef FAULT_INJECTOR
+	if(ndeldbs > 0)
+		SIMPLE_FAULT_INJECTOR(AfterDropDatabaseDirectories);
+#endif
 }
 
 /*

@@ -2,19 +2,76 @@ CREATE SCHEMA adst_w_fault;
 
 SET search_path TO adst_w_fault,public;
 
--- Scenario 2: Where alter database set tablespace fails on segment. In this
--- case we expect that the tablespace for database remains unchanged across all
--- the segments and all of the database files remain where they were before the alter.
+CREATE OR REPLACE FUNCTION insert_noop_xlog_record_master() RETURNS VOID AS
+    '@abs_builddir@/regress.so', 'insert_noop_xlog_record'
+LANGUAGE C EXECUTE ON MASTER;
 
--- Set tablespace location variables
-\set adst_source_tablespace_location '@testtablespace@/adst_w_fault_source'
-\set adst_destination_tablespace_location '@testtablespace@/adst_w_fault_dest'
+CREATE OR REPLACE FUNCTION insert_noop_xlog_record_all_segments() RETURNS SETOF VOID AS
+'@abs_builddir@/regress.so', 'insert_noop_xlog_record'
+    LANGUAGE C EXECUTE ON ALL SEGMENTS;
 
+CREATE OR REPLACE FUNCTION insert_noop_xlog_record() RETURNS VOID AS $$
+BEGIN
+    PERFORM insert_noop_xlog_record_master();
+    PERFORM insert_noop_xlog_record_all_segments();
+END;
+$$LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION setup_tablespace_location_dir_for_test(tablespace_location_dir text) RETURNS VOID AS $$
+import os;
+import shutil;
+import traceback
+try:
+    shutil.rmtree(tablespace_location_dir)
+except OSError:
+    plpy.debug(traceback.format_exc())
+    plpy.debug('failed to remove tablespace location directory: %s' % (tablespace_location_dir))
+os.mkdir(tablespace_location_dir)
+$$ LANGUAGE plpythonu;
+
+CREATE OR REPLACE FUNCTION force_mirrors_to_catch_up() RETURNS VOID AS $$
+BEGIN
+    PERFORM gp_inject_fault2('after_xlog_redo_noop', 'sleep', dbid, hostname, port) FROM gp_segment_configuration WHERE role='m';
+    PERFORM insert_noop_xlog_record();
+    -- EXECUTE COMMIT; -- Wake up WAL sender to send the latest Xlog to the mirrors to accelerate the test.
+    PERFORM gp_wait_until_triggered_fault2('after_xlog_redo_noop', 1, dbid, hostname, port) FROM gp_segment_configuration WHERE role='m';
+END;
+$$ LANGUAGE plpgsql;
+
+\set adst_source_tablespace_location @testtablespace@/adst_w_fault_source
+\set adst_destination_tablespace_location @testtablespace@/adst_w_fault_dest
+
+CREATE or REPLACE FUNCTION setup() RETURNS VOID AS $$
+DECLARE
+    adst_source_tablespace_location text := '@testtablespace@/adst_w_fault_source';
+    adst_destination_tablespace_location text := '@testtablespace@/adst_w_fault_dest';
+BEGIN
+    -- Setup tablespace directories
+    PERFORM setup_tablespace_location_dir_for_test(adst_source_tablespace_location);
+    PERFORM setup_tablespace_location_dir_for_test(adst_destination_tablespace_location);
+
+    -- setup faults
+    PERFORM gp_inject_fault2('all', 'reset', dbid, hostname, port) FROM gp_segment_configuration;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Scenario: An error on master directly after writing the 
+-- XLOG_DBASE_CREATE record.
+--
+-- Note: The primaries (and by extension their mirrors) are not involved
+-- here as the error occurs before the dispatch of the ALTER command.
+--  
+--                        Expectation
+-- +---------+-----------+-----------+-------------------+-------+
+-- |         | source_ts | target_ts | cleanup mechanism | fault |
+-- +---------+-----------+-----------+-------------------+-------+
+-- | Master  | remains   | deleted   | pendingDbDeletes  | E     |
+-- | SMaster | remains   | deleted   | XLOG_XACT_ABORT   |       |
+-- +---------+-----------+-----------+-------------------+-------+
+
+SELECT setup();
 -- Given we create the source and destination tablespaces
-
-\! mkdir @testtablespace@/adst_w_fault_source
 CREATE TABLESPACE adst_source_tablespace LOCATION :'adst_source_tablespace_location';
-\! mkdir @testtablespace@/adst_w_fault_dest
 CREATE TABLESPACE adst_destination_tablespace LOCATION :'adst_destination_tablespace_location';
 
 -- And we create a database in the source tablespace
@@ -23,25 +80,264 @@ CREATE DATABASE alter_db TABLESPACE adst_source_tablespace;
 -- And we record the filesystem state for the database in the source tablespace
 CREATE TEMPORARY TABLE before_alter AS SELECT * FROM stat_db_objects('alter_db', 'adst_source_tablespace');
 
--- And error on a segment while altering the database to use the new tablespace
-SELECT gp_inject_fault('inside_move_db_transaction', 'error', dbid) FROM gp_segment_configuration WHERE role = 'p' AND content = 0;
+-- And we track the removal of the dboid dir by the standby master.
+SELECT gp_inject_fault2('after_drop_database_directories', 'sleep', c.dbid, c.hostname, c.port) FROM gp_segment_configuration c WHERE content=-1 AND role='m';
+
+-- And introduce an error on the master directly after the XLOG_DBASE_CREATE is written by the master and before the master dispatches the ALTER command.
+SELECT gp_inject_fault2('inside_move_db_transaction', 'error', dbid, hostname, port) FROM gp_segment_configuration WHERE role = 'p' AND content = -1;
+
+-- When we execute an ALTER DATABASE SET TABLESPACE command on alter_db and the fault is triggered.
 ALTER DATABASE alter_db SET TABLESPACE adst_destination_tablespace;
 
--- Increase the likelihood that mirrors have applied the filesystem changes
-SELECT give_mirrors_time_to_catch_up();
+-- Ensure that the standby master has removed the dboid dir under the target tablespace.
+SELECT gp_wait_until_triggered_fault2('after_drop_database_directories', 1, dbid, hostname, port) FROM gp_segment_configuration WHERE content=-1 AND role='m';
 
 -- Then all the files of the database should remain in the dboid directory in the source tablespace directory for all database instances.
 CREATE TEMPORARY TABLE after_alter AS SELECT * FROM stat_db_objects('alter_db', 'adst_source_tablespace');
 (SELECT * FROM before_alter) EXCEPT (SELECT * FROM after_alter);
 
--- And the dboid directory under the target tablespace directory should remain empty for all database instances.
+-- And the dboid directory under the target tablespace directory is empty for all database instances.
 SELECT * FROM stat_db_objects('alter_db', 'adst_destination_tablespace');
 
 -- Cleanup
-SELECT gp_inject_fault('inside_move_db_transaction', 'reset', dbid) FROM gp_segment_configuration WHERE role = 'p' AND content = 0;
-
+DROP TABLE before_alter;
+DROP TABLE after_alter;
 DROP DATABASE alter_db;
 DROP TABLESPACE adst_source_tablespace;
 DROP TABLESPACE adst_destination_tablespace;
+SELECT force_mirrors_to_catch_up();
 
-DROP SCHEMA adst_w_fault;
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+-- Scenario: An error after XLOG_DBASE_CREATE on a primary and error 
+-- before XLOG_XACT_ABORT on master
+--
+--                        Expectation
+-- +---------+-----------+-----------+-------------------+-------+
+-- |         | source_ts | target_ts | cleanup mechanism | fault |
+-- +---------+-----------+-----------+-------------------+-------+
+-- | Master  | remains   | deleted   | pendingDbDeletes  |       |
+-- | P0      | remains   | deleted   | pendingDbDeletes  | E     |
+-- | P1      | remains   | deleted   | pendingDbDeletes  |       |
+-- | P2      | remains   | deleted   | pendingDbDeletes  |       |
+-- | SMaster | remains   | deleted   | XLOG_XACT_ABORT   |       |
+-- | M0      | remains   | deleted   | XLOG_XACT_ABORT   |       |
+-- | M1      | remains   | deleted   | XLOG_XACT_ABORT   |       |
+-- | M2      | remains   | deleted   | XLOG_XACT_ABORT   |       |
+-- +---------+-----------+-----------+-------------------+-------+
+
+SELECT setup();
+-- Given we create the source and destination tablespaces
+CREATE TABLESPACE adst_source_tablespace LOCATION :'adst_source_tablespace_location';
+CREATE TABLESPACE adst_destination_tablespace LOCATION :'adst_destination_tablespace_location';
+
+-- And we create a database in the source tablespace
+CREATE DATABASE alter_db TABLESPACE adst_source_tablespace;
+
+-- And we record the filesystem state for the database in the source tablespace
+CREATE TEMPORARY TABLE before_alter AS SELECT * FROM stat_db_objects('alter_db', 'adst_source_tablespace');
+
+-- And we track the removal of the dboid dir by all mirrors including the standby master.
+SELECT gp_inject_fault2('after_drop_database_directories', 'sleep', c.dbid, c.hostname, c.port) FROM gp_segment_configuration c WHERE role='m';
+
+-- And introduce an error on a primary directly after the XLOG_DBASE_CREATE is written by the primary during dispatch of the ALTER command.
+SELECT gp_inject_fault2('inside_move_db_transaction', 'error', dbid, hostname, port) FROM gp_segment_configuration WHERE role = 'p' AND content = 0;
+
+-- When we execute an ALTER DATABASE SET TABLESPACE command on alter_db and the fault is triggered.
+ALTER DATABASE alter_db SET TABLESPACE adst_destination_tablespace;
+
+-- Ensure that the mirrors including the standby master have removed the dboid dir under the target tablespace.
+SELECT gp_wait_until_triggered_fault2('after_drop_database_directories', 1, dbid, hostname, port) FROM gp_segment_configuration WHERE role='m';
+
+-- Then all the files of the database should remain in the dboid directory in the source tablespace directory for all database instances.
+CREATE TEMPORARY TABLE after_alter AS SELECT * FROM stat_db_objects('alter_db', 'adst_source_tablespace');
+(SELECT * FROM before_alter) EXCEPT (SELECT * FROM after_alter);
+
+-- And the dboid directory under the target tablespace directory is empty for all database instances.
+SELECT * FROM stat_db_objects('alter_db', 'adst_destination_tablespace');
+
+-- Cleanup
+DROP TABLE before_alter;
+DROP TABLE after_alter;
+DROP DATABASE alter_db;
+DROP TABLESPACE adst_source_tablespace;
+DROP TABLESPACE adst_destination_tablespace;
+SELECT force_mirrors_to_catch_up();
+
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+-- Scenario: An error after XLOG_DBASE_CREATE on Primary and error before 
+-- XLOG_XACT_ABORT on master
+--
+--                        Expectation
+-- +---------+-----------+-----------+-------------------+-------+
+-- |         | source_ts | target_ts | cleanup mechanism | fault |
+-- +---------+-----------+-----------+-------------------+-------+
+-- | Master  | remains   | deleted   | pendingDbDeletes  | E     |
+-- | P0      | remains   | deleted   | pendingDbDeletes  | E     |
+-- | P1      | remains   | deleted   | pendingDbDeletes  |       |
+-- | P2      | remains   | deleted   | pendingDbDeletes  |       |
+-- | SMaster | remains   | deleted   | XLOG_XACT_ABORT   |       |
+-- | M0      | remains   | deleted   | XLOG_XACT_ABORT   |       |
+-- | M1      | remains   | deleted   | XLOG_XACT_ABORT   |       |
+-- | M2      | remains   | deleted   | XLOG_XACT_ABORT   |       |
+-- +---------+-----------+-----------+-------------------+-------+
+
+SELECT setup();
+-- Given we create the source and destination tablespaces
+CREATE TABLESPACE adst_source_tablespace LOCATION :'adst_source_tablespace_location';
+CREATE TABLESPACE adst_destination_tablespace LOCATION :'adst_destination_tablespace_location';
+
+-- And we create a database in the source tablespace
+CREATE DATABASE alter_db TABLESPACE adst_source_tablespace;
+
+-- And we record the filesystem state for the database in the source tablespace
+CREATE TEMPORARY TABLE before_alter AS SELECT * FROM stat_db_objects('alter_db', 'adst_source_tablespace');
+
+-- And we track the removal of the dboid dir by all mirrors including the standby master.
+SELECT gp_inject_fault2('after_drop_database_directories', 'sleep', c.dbid, c.hostname, c.port) FROM gp_segment_configuration c WHERE role='m';
+
+-- And introduce an error on a primary directly after the XLOG_DBASE_CREATE is written by the primary during dispatch of the ALTER command.
+SELECT gp_inject_fault2('inside_move_db_transaction', 'error', dbid, hostname, port) FROM gp_segment_configuration WHERE role = 'p' AND content = 0;
+
+-- And introduce an error on the master after dispatch of the ALTER command and before XLOG_XACT_ABORT is written by the master.
+SELECT gp_inject_fault2('transaction_abort_failure', 'error', dbid, hostname, port) FROM gp_segment_configuration WHERE role = 'p' AND content = -1;
+
+-- When we execute an ALTER DATABASE SET TABLESPACE command on alter_db and the faults are triggered.
+ALTER DATABASE alter_db SET TABLESPACE adst_destination_tablespace;
+
+-- Ensure that the mirrors including the standby master have removed the dboid dir under the target tablespace.
+SELECT gp_wait_until_triggered_fault2('after_drop_database_directories', 1, dbid, hostname, port) FROM gp_segment_configuration WHERE role='m';
+
+-- Then all the files of the database should remain in the dboid directory in the source tablespace directory for all database instances.
+CREATE TEMPORARY TABLE after_alter AS SELECT * FROM stat_db_objects('alter_db', 'adst_source_tablespace');
+(SELECT * FROM before_alter) EXCEPT (SELECT * FROM after_alter);
+
+-- And the dboid directory under the target tablespace directory is empty for all database instances.
+SELECT * FROM stat_db_objects('alter_db', 'adst_destination_tablespace');
+
+-- Cleanup
+DROP TABLE before_alter;
+DROP TABLE after_alter;
+DROP DATABASE alter_db;
+DROP TABLESPACE adst_source_tablespace;
+DROP TABLESPACE adst_destination_tablespace;
+SELECT force_mirrors_to_catch_up();
+
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+-- Scenario: An error before XLOG_XACT_PREPARE on Primary
+--
+--                        Expectation
+-- +---------+-----------+-----------+--------------------------+-------+
+-- |         | source_ts | target_ts |    cleanup mechanism     | fault |
+-- +---------+-----------+-----------+--------------------------+-------+
+-- | Master  | remains   | deleted   | pendingDbDeletes         |       |
+-- | P0      | remains   | deleted   | pendingDbDeletes         | E     |
+-- | P1      | remains   | deleted   | XLOG_XACT_PREPARE        |       |
+-- | P2      | remains   | deleted   | XLOG_XACT_PREPARE        |       |
+-- | SMaster | remains   | deleted   | XLOG_XACT_ABORT          |       |
+-- | M0      | remains   | deleted   | XLOG_XACT_ABORT          |       |
+-- | M1      | remains   | deleted   | XLOG_XACT_ABORT_PREPARED |       |
+-- | M2      | remains   | deleted   | XLOG_XACT_ABORT_PREPARED |       |
+-- +---------+-----------+-----------+--------------------------+-------+
+
+SELECT setup();
+-- Given we create the source and destination tablespaces
+CREATE TABLESPACE adst_source_tablespace LOCATION :'adst_source_tablespace_location';
+CREATE TABLESPACE adst_destination_tablespace LOCATION :'adst_destination_tablespace_location';
+
+-- And we create a database in the source tablespace
+CREATE DATABASE alter_db TABLESPACE adst_source_tablespace;
+
+-- And we record the filesystem state for the database in the source tablespace
+CREATE TEMPORARY TABLE before_alter AS SELECT * FROM stat_db_objects('alter_db', 'adst_source_tablespace');
+
+-- And we track the removal of the dboid dir by all mirrors including the standby master.
+SELECT gp_inject_fault2('after_drop_database_directories', 'sleep', c.dbid, c.hostname, c.port) FROM gp_segment_configuration c WHERE role='m';
+
+-- And introduce an error on a primary directly before the primary writes the XLOG_XACT_PREPARE record during the dispatch of the PREPARE TRANSACTION command.
+SELECT gp_inject_fault2('start_prepare', 'error', dbid, hostname, port) FROM gp_segment_configuration WHERE role = 'p' AND content = 0;
+
+-- When we execute an ALTER DATABASE SET TABLESPACE command on alter_db and the fault is triggered.
+ALTER DATABASE alter_db SET TABLESPACE adst_destination_tablespace;
+
+-- Ensure that the mirrors including the standby master have removed the dboid dir under the target tablespace.
+SELECT gp_wait_until_triggered_fault2('after_drop_database_directories', 1, dbid, hostname, port) FROM gp_segment_configuration WHERE role='m';
+
+-- Then all the files of the database should remain in the dboid directory in the source tablespace directory for all database instances.
+CREATE TEMPORARY TABLE after_alter AS SELECT * FROM stat_db_objects('alter_db', 'adst_source_tablespace');
+(SELECT * FROM before_alter) EXCEPT (SELECT * FROM after_alter);
+
+-- And the dboid directory under the target tablespace directory is empty for all database instances.
+SELECT * FROM stat_db_objects('alter_db', 'adst_destination_tablespace');
+
+-- Cleanup
+DROP TABLE before_alter;
+DROP TABLE after_alter;
+DROP DATABASE alter_db;
+DROP TABLESPACE adst_source_tablespace;
+DROP TABLESPACE adst_destination_tablespace;
+SELECT force_mirrors_to_catch_up();
+
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+-- Scenario: An error before XLOG_XACT_PREPARE on Primary and before 
+-- XLOG_XACT_ABORT on master.
+--
+--                        Expectation
+-- +---------+-----------+-----------+--------------------------+-------+
+-- |         | source_ts | target_ts |    cleanup mechanism     | fault |
+-- +---------+-----------+-----------+--------------------------+-------+
+-- | Master  | remains   | deleted   | pendingDbDeletes         | E     |
+-- | P0      | remains   | deleted   | pendingDbDeletes         | E     |
+-- | P1      | remains   | deleted   | XLOG_XACT_PREPARE        |       |
+-- | P2      | remains   | deleted   | XLOG_XACT_PREPARE        |       |
+-- | SMaster | remains   | deleted   | XLOG_XACT_ABORT          |       |
+-- | M0      | remains   | deleted   | XLOG_XACT_ABORT          |       |
+-- | M1      | remains   | deleted   | XLOG_XACT_ABORT_PREPARED |       |
+-- | M2      | remains   | deleted   | XLOG_XACT_ABORT_PREPARED |       |
+-- +---------+-----------+-----------+--------------------------+-------+
+
+SELECT setup();
+-- Given we create the source and destination tablespaces
+CREATE TABLESPACE adst_source_tablespace LOCATION :'adst_source_tablespace_location';
+CREATE TABLESPACE adst_destination_tablespace LOCATION :'adst_destination_tablespace_location';
+
+-- And we create a database in the source tablespace
+CREATE DATABASE alter_db TABLESPACE adst_source_tablespace;
+
+-- And we record the filesystem state for the database in the source tablespace
+CREATE TEMPORARY TABLE before_alter AS SELECT * FROM stat_db_objects('alter_db', 'adst_source_tablespace');
+
+-- And we track the removal of the dboid dir by all mirrors including the standby master.
+SELECT gp_inject_fault2('after_drop_database_directories', 'sleep', c.dbid, c.hostname, c.port) FROM gp_segment_configuration c WHERE role='m';
+
+-- And introduce an error on a primary directly before the primary writes the XLOG_XACT_PREPARE record during the dispatch of the PREPARE TRANSACTION command.
+SELECT gp_inject_fault2('start_prepare', 'error', dbid, hostname, port) FROM gp_segment_configuration WHERE role = 'p' AND content = 0;
+
+-- And introduce an error on the master after dispatch of the ALTER command and before XLOG_XACT_ABORT is written by the master.
+SELECT gp_inject_fault2('transaction_abort_failure', 'error', dbid, hostname, port) FROM gp_segment_configuration WHERE role = 'p' AND content = -1;
+
+-- When we execute an ALTER DATABASE SET TABLESPACE command on alter_db and the faults are triggered.
+ALTER DATABASE alter_db SET TABLESPACE adst_destination_tablespace;
+
+-- Ensure that the mirrors including the standby master have removed the dboid dir under the target tablespace.
+SELECT gp_wait_until_triggered_fault2('after_drop_database_directories', 1, dbid, hostname, port) FROM gp_segment_configuration WHERE role='m';
+
+-- Then all the files of the database should remain in the dboid directory in the source tablespace directory for all database instances.
+CREATE TEMPORARY TABLE after_alter AS SELECT * FROM stat_db_objects('alter_db', 'adst_source_tablespace');
+(SELECT * FROM before_alter) EXCEPT (SELECT * FROM after_alter);
+
+-- And the dboid directory under the target tablespace directory is empty for all database instances.
+SELECT * FROM stat_db_objects('alter_db', 'adst_destination_tablespace');
+
+-- Cleanup
+DROP TABLE before_alter;
+DROP TABLE after_alter;
+DROP DATABASE alter_db;
+DROP TABLESPACE adst_source_tablespace;
+DROP TABLESPACE adst_destination_tablespace;
+SELECT force_mirrors_to_catch_up();
+
+DROP SCHEMA adst_w_fault CASCADE;

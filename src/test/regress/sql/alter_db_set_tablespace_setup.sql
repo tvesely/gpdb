@@ -1,24 +1,6 @@
+-- start_ignore
 CREATE LANGUAGE plpythonu;
-
-create or replace function give_mirrors_time_to_catch_up() returns void as $$
-declare number_of_segments_behind integer;
-    declare number_of_retries integer default 0;
-begin
-    CHECKPOINT;
-    LOOP
-        IF number_of_retries = 50 THEN
-            raise EXCEPTION 'too many retries waiting for mirrors to catch up';
-        END IF;
-
-        select count(1) into number_of_segments_behind from (select gp_execution_segment(), pg_last_xlog_replay_location() as replayed, pg_last_xlog_receive_location() as recieved UNION ALL select gp_execution_segment(), pg_last_xlog_replay_location() as replayed, pg_last_xlog_receive_location() as recieved from gp_dist_random('gp_id')) thing where replayed != recieved;
-        number_of_retries := number_of_retries + 1;
-
-        EXIT WHEN number_of_segments_behind = 0;
-
-        perform pg_sleep(0.1);
-    END LOOP;
-end;
-$$ language plpgsql;
+-- end_ignore
 
 CREATE OR REPLACE FUNCTION stat_db_objects(datname text, spcname text)
     RETURNS TABLE (dbid int2, relfilenode_dboid_relative_path text, size int)
